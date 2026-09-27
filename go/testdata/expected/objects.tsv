@@ -1,0 +1,7 @@
+store	locator	size	partial	evidence	digest
+comfyui	checkpoints/SDXL/sd_xl_base_1.0.safetensors.part	1500	true	none	
+fastflowlm	Half-NPU/model.q4nx.part	777	true	none	
+huggingface	models--acme--Partial-GGUF/blobs/54b6fd48a9bd239fb556e4b7fa6bcffab6bd411faae9cf01bfdb5fdcea130511.incomplete	1234	true	none	
+ollama	blobs/sha256-0366c61aa99e3b4ae10854ed23212cbc6d9520b36f6ca07992d8588b71cb9d3e	512	false	named	sha256:0366c61aa99e3b4ae10854ed23212cbc6d9520b36f6ca07992d8588b71cb9d3e
+ollama	blobs/sha256-8b14b211883ec5613b00cc65d57d71eb120b25463245010b091730ef9c8747b9-partial	1000	true	none	
+ollama	blobs/sha256-8b14b211883ec5613b00cc65d57d71eb120b25463245010b091730ef9c8747b9-partial-0	10	true	none	

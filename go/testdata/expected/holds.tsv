@@ -1,0 +1,36 @@
+store	manifest	program	instance	purpose	lifetime	attestation	basis index	basis key	basis role
+comfyui	comfyui:checkpoints/sd15.safetensors	comfyui		installed	while_present	observed	models tree	checkpoints	
+comfyui	comfyui:checkpoints/sd15.safetensors	swarmui		installed	while_present	observed	{{ROOT}}/SwarmUI/Data/Settings.fds	Paths.ModelRoot[1]	
+comfyui	comfyui:text_encoders/umt5_xxl_fp16.safetensors	comfyui		installed	while_present	observed	models tree	text_encoders	
+comfyui	comfyui:text_encoders/umt5_xxl_fp16.safetensors	swarmui		installed	while_present	observed	{{ROOT}}/SwarmUI/Data/Settings.fds	Paths.ModelRoot[1]	
+comfyui	comfyui:text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors	comfyui		installed	while_present	observed	models tree	text_encoders	
+comfyui	comfyui:text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors	swarmui		installed	while_present	observed	{{ROOT}}/SwarmUI/Data/Settings.fds	Paths.ModelRoot[1]	
+comfyui-extra:a111	comfyui:models/Lora/detail.safetensors	comfyui		installed	while_present	observed	{{ROOT}}/AppData/Local/AMD/AI_Bundle/ComfyUI/ComfyUI/extra_model_paths.yaml	a111.loras	
+comfyui-extra:a111	comfyui:models/Stable-diffusion/unlisted-root.ckpt	comfyui		installed	while_present	observed	{{ROOT}}/AppData/Local/AMD/AI_Bundle/ComfyUI/ComfyUI/extra_model_paths.yaml	a111.checkpoints	
+comfyui-extra:a111	comfyui:models/Stable-diffusion/v1-5.safetensors	comfyui		installed	while_present	observed	{{ROOT}}/AppData/Local/AMD/AI_Bundle/ComfyUI/ComfyUI/extra_model_paths.yaml	a111.checkpoints	
+fastflowlm	flm:Tiny-NPU2	fastflowlm		installed	while_present	observed	Tiny-NPU2/	Tiny-NPU2	
+huggingface	hf:acme/Partial-GGUF@e0fea238c42e	huggingface		cache	while_present	observed	models--acme--Partial-GGUF/refs/main	main	
+huggingface	hf:acme/Shard:Q4_K_XL/S-Q4_K_XL.gguf	huggingface		cache	while_present	observed	models--acme--Shard/refs/main	main	
+huggingface	hf:acme/Shard:Q4_K_XL/S-Q4_K_XL.gguf	lemonade		installed	while_present	observed	{{ROOT}}/.config/lemonade/user_models.json	Shard-Q4_K_XL	main
+huggingface	hf:acme/Tiny-GGUF:Tiny-Q4_K_M.gguf	huggingface		cache	while_present	observed	models--acme--Tiny-GGUF/refs/main	main	
+huggingface	hf:acme/Tiny-GGUF:Tiny-Q4_K_M.gguf	lemonade		installed	while_present	observed	models--acme--Tiny-GGUF/.lemonade_registry.json	Tiny-GGUF	main
+huggingface	hf:acme/Tiny-GGUF:Tiny-Q8_0.gguf	huggingface		cache	while_present	observed	models--acme--Tiny-GGUF/refs/main	main	
+huggingface	hf:acme/Tiny-GGUF:mmproj-F16.gguf	huggingface		cache	while_present	observed	models--acme--Tiny-GGUF/refs/main	main	
+huggingface	hf:acme/Tiny-GGUF:mmproj-F16.gguf	lemonade		installed	while_present	observed	models--acme--Tiny-GGUF/.lemonade_registry.json	Tiny-GGUF	mmproj
+jan	jan:mini	jan		installed	while_present	observed	mini/model.yml	all-MiniLM-L6-v2	
+jan	jan:vision	jan		installed	while_present	observed	vision/model.yml	Vision	
+lemonade-extra	lemonade:local-model.gguf	lemonade		installed	while_present	observed	lemonade config.json extra_models_dir	.	
+lmstudio	lmstudio:acme/Tiny-GGUF/Tiny-Q4_K_M.gguf	lmstudio		installed	while_present	observed	models folder tree	acme/Tiny-GGUF	
+lmstudio	lmstudio:acme/Tiny-GGUF/mmproj-Tiny-F16.gguf	lmstudio		installed	while_present	observed	models folder tree	acme/Tiny-GGUF	
+lmstudio	lmstudio:other/Big-GGUF/Big-Q6_K.gguf	lmstudio		installed	while_present	observed	models folder tree	other/Big-GGUF	
+ollama	ollama:hf.co/acme/remote-gguf:q4	ollama		installed	while_present	observed	manifests/hf.co/acme/remote-gguf/q4	hf.co/acme/remote-gguf:q4	
+ollama	ollama:library/tiny:1b	ollama		installed	while_present	observed	manifests/registry.ollama.ai/library/tiny/1b	library/tiny:1b	
+ollama	ollama:library/tiny:latest	ollama		installed	while_present	observed	manifests/registry.ollama.ai/library/tiny/latest	library/tiny:latest	
+pinokio	pinokio:drives/peers/d17/checkpoints/shared.safetensors	comfy	pinokio:https://github.com/cocktailpeanut/comfy.git	installed	while_present	observed	{{ROOT}}/pinokio/drive/drives.json	https://github.com/cocktailpeanut/comfy.git	app/models/checkpoints
+pinokio	pinokio:drives/peers/d17/checkpoints/shared.safetensors	forge	pinokio:https://github.com/pinokiofactory/forge.git	installed	while_present	observed	{{ROOT}}/pinokio/drive/drives.json	https://github.com/pinokiofactory/forge.git	app/models/Stable-diffusion
+stabilitymatrix	stabilitymatrix:Lora/local.safetensors	comfyui	stabilitymatrix:ComfyUI	installed	while_present	observed	{{ROOT}}/StabilityMatrix/settings.json	InstalledPackages ComfyUI	Configuration
+stabilitymatrix	stabilitymatrix:Lora/local.safetensors	stable-diffusion-webui-forge	stabilitymatrix:stable-diffusion-webui-forge	installed	while_present	observed	{{ROOT}}/StabilityMatrix/settings.json	InstalledPackages Forge	Symlink
+stabilitymatrix	stabilitymatrix:StableDiffusion/juggernaut.safetensors	comfyui	stabilitymatrix:ComfyUI	installed	while_present	observed	{{ROOT}}/StabilityMatrix/settings.json	InstalledPackages ComfyUI	Configuration
+stabilitymatrix	stabilitymatrix:StableDiffusion/juggernaut.safetensors	stabilitymatrix		fetched	while_present	observed	StableDiffusion/juggernaut.cm-info.json	cm-info	
+stabilitymatrix	stabilitymatrix:StableDiffusion/juggernaut.safetensors	stable-diffusion-webui-forge	stabilitymatrix:stable-diffusion-webui-forge	installed	while_present	observed	{{ROOT}}/StabilityMatrix/settings.json	InstalledPackages Forge	Symlink
+swarmui	swarmui:Stable-Diffusion/flux-dev.safetensors	swarmui		installed	while_present	observed	{{ROOT}}/SwarmUI/Data/Settings.fds	Paths.ModelRoot[0]	

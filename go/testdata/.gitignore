@@ -1,0 +1,2 @@
+# The repository ignores *.gguf; the fixture corpus needs them.
+!*.gguf

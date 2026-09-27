@@ -1,0 +1,5 @@
+{
+  "config_version": 2,
+  "models_dir": "auto",
+  "extra_models_dir": "{{ROOT}}/LemonadeExtra"
+}

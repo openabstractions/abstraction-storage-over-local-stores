@@ -1,0 +1,9 @@
+{
+  "https://github.com/cocktailpeanut/comfy.git": {
+    "app/models/checkpoints": "{{ROOT}}/pinokio/drive/drives/peers/d17/checkpoints"
+  },
+  "https://github.com/pinokiofactory/forge.git": {
+    "app/models/Stable-diffusion": "{{ROOT}}/pinokio/drive/drives/peers/d17/checkpoints",
+    "app/models/Lora": "{{ROOT}}/pinokio/drive/drives/peers/d18/gone"
+  }
+}

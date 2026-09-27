@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 2,
+  "config": {},
+  "layers": [
+    {
+      "mediaType": "application/vnd.ollama.image.model",
+      "digest": "sha256:%64.ollama-model%",
+      "size": 4096
+    }
+  ]
+}

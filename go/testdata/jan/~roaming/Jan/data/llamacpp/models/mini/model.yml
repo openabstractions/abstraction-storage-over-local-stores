@@ -1,0 +1,4 @@
+embedding: true
+model_path: llamacpp/models/mini/model.gguf
+name: all-MiniLM-L6-v2
+size_bytes: 1100

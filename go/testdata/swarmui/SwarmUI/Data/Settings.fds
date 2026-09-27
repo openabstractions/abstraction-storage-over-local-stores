@@ -1,0 +1,7 @@
+# SwarmUI settings
+Paths:
+	ModelRoot: Models;{{ROOT}}/AppData/Local/AMD/AI_Bundle/ComfyUI/ComfyUI/models
+	SDModelFolder: Stable-Diffusion;checkpoints
+	DataPath: Data
+DefaultUser:
+	ModelRoot: ignored-not-paths

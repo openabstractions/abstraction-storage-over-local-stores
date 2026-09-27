@@ -1,0 +1,11 @@
+{
+  "Shard-Q4_K_XL": {
+    "checkpoint": "acme/Shard:Q4_K_XL",
+    "recipe": "llamacpp",
+    "source": "huggingface",
+    "suggested": true,
+    "labels": [
+      "custom"
+    ]
+  }
+}

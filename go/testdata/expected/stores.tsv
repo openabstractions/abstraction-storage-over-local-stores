@@ -1,0 +1,13 @@
+name	program	locator	rule	present	placement	domain	errors
+comfyui	comfyui	{{ROOT}}/AppData/Local/AMD/AI_Bundle/ComfyUI/ComfyUI/models	default location of the AMD AI bundle	true	local		
+comfyui-extra:a111	comfyui	{{ROOT}}/stable-diffusion-webui	claim by comfyui: {{ROOT}}/AppData/Local/AMD/AI_Bundle/ComfyUI/ComfyUI/extra_model_paths.yaml a111.checkpoints	true	local		
+fastflowlm	fastflowlm	{{ROOT}}/.flm/models	default location ~/.flm/models	true	local		
+huggingface	huggingface	{{ROOT}}/.cache/huggingface/hub	default location ~/.cache/huggingface/hub	true	local		
+jan	jan	{{ROOT}}/AppData/Roaming/Jan/data/llamacpp/models	default data folder Jan/data	true	local		malformed_index broken/model.yml
+lemonade-extra	lemonade	{{ROOT}}/LemonadeExtra	lemonade {{ROOT}}/.cache/lemonade/config.json extra_models_dir	true	local		
+lmstudio	lmstudio	{{ROOT}}/LMStudioModels	home from ~/.lmstudio-home-pointer, settings.json downloadsFolder	true	local		
+nas		{{ROOT}}/NAS/models	operator configuration extra_roots	true	local		
+ollama	ollama	{{ROOT}}/.ollama/models	default location ~/.ollama/models	true	local		
+pinokio	pinokio	{{ROOT}}/pinokio/drive	~/.pinokio/config.json home, drive <home>/drive	true	local		
+stabilitymatrix	stabilitymatrix	{{ROOT}}/StabilityMatrix/Models	library.json LibraryPath, ModelsDirectory <library>/Models	true	local		
+swarmui	swarmui	{{ROOT}}/SwarmUI/Models	claim by swarmui: {{ROOT}}/SwarmUI/Data/Settings.fds Paths.ModelRoot[0]	true	local		

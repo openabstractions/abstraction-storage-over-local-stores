@@ -1,0 +1,4 @@
+model_path: llamacpp/models/vision/model.gguf
+mmproj_path: llamacpp/models/vision/mmproj.gguf
+name: Vision
+size_bytes: 2500

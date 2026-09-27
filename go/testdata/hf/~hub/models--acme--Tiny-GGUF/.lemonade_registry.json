@@ -1,0 +1,16 @@
+{
+  "processed_models": {
+    "Tiny-GGUF": {
+      "selection": "llamacpp\nmain=acme/Tiny-GGUF:Q4_K_M\nmmproj=acme/Tiny-GGUF:mmproj-F16.gguf",
+      "snapshot_id": "%40.tiny-rev%"
+    },
+    "user.Tiny-GGUF-Q3_K_M": {
+      "selection": "llamacpp\nmain=acme/Tiny-GGUF:Q3_K_M",
+      "snapshot_id": "%40.tiny-rev%"
+    }
+  },
+  "repo_id": "acme/Tiny-GGUF",
+  "revision": "%40.tiny-rev%",
+  "snapshot_id": "%40.tiny-rev%",
+  "source": "huggingface"
+}

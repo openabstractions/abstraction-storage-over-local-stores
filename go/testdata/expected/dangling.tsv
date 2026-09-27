@@ -1,0 +1,6 @@
+program	instance	basis index	basis key	basis role	reference	expected digest	expected size
+comfyui		{{ROOT}}/AppData/Local/AMD/AI_Bundle/ComfyUI/ComfyUI/extra_model_paths.yaml	a111.loras		{{ROOT}}/stable-diffusion-webui/models/LyCORIS		0
+comfyui		{{ROOT}}/AppData/Local/AMD/AI_Bundle/ComfyUI/ComfyUI/extra_model_paths.yaml	a111.vae		{{ROOT}}/stable-diffusion-webui/models/VAE		0
+forge	pinokio:https://github.com/pinokiofactory/forge.git	{{ROOT}}/pinokio/drive/drives.json	https://github.com/pinokiofactory/forge.git	app/models/Lora	{{ROOT}}/pinokio/drive/drives/peers/d18/gone		0
+lemonade		models--acme--Tiny-GGUF/.lemonade_registry.json	user.Tiny-GGUF-Q3_K_M	main	acme/Tiny-GGUF:Q3_K_M		0
+ollama		manifests/hf.co/acme/remote-gguf/q4	hf.co/acme/remote-gguf:q4	weights	sha256:7ff6c8a615d8840cc1b015d39762ddee2db3396a7b2e0bc27629c8136a63769e	sha256:7ff6c8a615d8840cc1b015d39762ddee2db3396a7b2e0bc27629c8136a63769e	9999
