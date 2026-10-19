@@ -13,9 +13,11 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"strings"
 
-	"github.com/openabstractions/abstraction-identity/listen"
+	"github.com/openabstractions/abstraction-facade/go-core/bootstrap"
 
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/extra"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/service"
@@ -41,7 +43,12 @@ keys are refused:
   fastflowlm        FastFlowLM model directories chosen at installation
   extra_roots       directories on this machine the operator names as stores;
                     holder, when set, is the program the operator says uses one;
-                    expected_file_key, when set, prevents reading a replacement folder
+                    expected_file_key, when set, prevents reading a replacement folder;
+                    files, Setup's own stores only, lists each catalogue file by
+                    path, size, sha256 and role: a file at that path and size
+                    is reported by that digest as hashed, without being read;
+                    models names each catalogue model by its files, and one
+                    whose files are all present is one model manifest
 ABSTRACTION_MODEL_ROOTS ("store=dir" entries separated by the platform list
 separator) adds roots as well. A network share or another machine's store is
 never a store: the source runs where the store is.
@@ -54,8 +61,11 @@ it holds and which program's own index says it uses each thing. It reads
 directory listings, sizes, modification times, the programs' index files, and
 the key-value header of each GGUF weight file, which names the model the
 weights are, and the central directory of each zip in an operator-named root.
-Snapshot and serve read no tensor. They hash only a file in ASUS's AI model
-folders whose path and size match a pinned public release and that SYSTEM,
+Snapshot and serve read no tensor. serve hashes a weights file its store
+names by no SHA-256 only when a caller's Verify names its manifest (LS-13),
+on a local volume, at background priority; and a file in ASUS's AI model
+folders whose path and size match a pinned public release and that
+SYSTEM,
 Administrators or TrustedInstaller owns with no other account able to
 change it. Each is hashed once, in the background, and its digest kept with
 the file's size, time and file ID in a folder private to this account,
@@ -85,8 +95,11 @@ Commands:
   help       print this help (also -h, --help, or no arguments)
 
 Options:
+  Endpoint shortcuts use [a-z0-9-]+. Absolute paths and full named pipes are
+  used verbatim. Other short spellings (dot, underscore, uppercase, spaces)
+  are no longer shortcuts; use the runtime-assigned explicit endpoint path.
   --endpoint NAME  local endpoint name; the platform endpoint is
-                   \\.\pipe\openabstractions-NAME on Windows and a socket in a
+                   \\.\pipe\openabstractions-user-<SID>-NAME on Windows and a socket in a
                    per-account directory elsewhere
   --config FILE    operator configuration, JSON; default $INVENTORYD_CONFIG
   --home DIR       read this directory as the user's home instead of the real one
@@ -185,6 +198,11 @@ func environment(config, home string, getenv func(string) string) (source.Env, e
 		return source.Env{}, fmt.Errorf("no home directory; pass --home")
 	}
 	env.Digests = source.NewDigests(env.DigestRecordPath())
+	// A GGUF's header names its architecture and the context it was trained
+	// for (descriptor@1 MODEL-C2): the model host's allowlist and the
+	// router's offer read both. One read per held-file stamp, of the header
+	// alone.
+	env.Headers = source.NewHeaders()
 	return env, nil
 }
 
@@ -272,6 +290,12 @@ func runServe(args []string, stdout, stderr io.Writer, getenv func(string) strin
 		fmt.Fprint(stderr, "inventoryd serve: --endpoint is required\n\n"+serveUsage)
 		return 2
 	}
+	address, err := serveEndpoint(*endpoint)
+	if err != nil {
+		//unchecked: stderr failure cannot change this pre-provider refusal
+		fmt.Fprintf(stderr, "inventoryd serve: %v\n", err)
+		return 2
+	}
 	env, err := serveEnvironment(*config, *home, getenv, *ignoreEnvironmentRoots || *configRootsOnly)
 	if err != nil {
 		//unchecked: CLI output; the process exit code, not a returned error, already reports the outcome
@@ -280,7 +304,8 @@ func runServe(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	}
 	adapters := serveAdapters(*configRootsOnly)
 	src := service.New(func() snapshot.Result { return snapshot.Take(env, adapters) })
-	host, err := service.Listen(listen.Endpoint(*endpoint), src)
+	src.Hash = env.Digests.Request
+	host, err := service.Listen(address, src)
 	if err != nil {
 		//unchecked: CLI output; the process exit code, not a returned error, already reports the outcome
 		fmt.Fprintf(stderr, "inventoryd serve: %v\n", err)
@@ -290,7 +315,7 @@ func runServe(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	//unchecked: CLI output; the process exit code, not a returned error, already reports the outcome
-	fmt.Fprintf(stdout, "inventoryd serving abstraction.storage/inventory-source@1 on %s\n", listen.Endpoint(*endpoint))
+	fmt.Fprintf(stdout, "inventoryd serving abstraction.storage/inventory-source@1 on %s\n", address)
 	if err := host.Serve(ctx); err != nil {
 		//unchecked: CLI output; the process exit code, not a returned error, already reports the outcome
 		fmt.Fprintf(stderr, "inventoryd serve: %v\n", err)
@@ -310,4 +335,17 @@ func userHome(getenv func(string) string) string {
 	//unchecked: a failure just leaves h empty, which the caller (environment) already checks and reports as "no home directory"
 	h, _ := os.UserHomeDir()
 	return h
+}
+
+// serveEndpoint routes CLI input only; bootstrap owns account placement.
+func serveEndpoint(value string) (string, error) {
+	windowsDrive := len(value) >= 3 && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) && value[1] == ':' && (value[2] == '/' || value[2] == '\\')
+	if filepath.IsAbs(value) || strings.HasPrefix(value, "/") || strings.HasPrefix(value, `\\`) || windowsDrive {
+		return value, nil
+	}
+	address, err := bootstrap.Endpoint(value)
+	if err != nil {
+		return "", fmt.Errorf("resolve short endpoint (names use [a-z0-9-]+; use an explicit absolute endpoint path for other names): %w", err)
+	}
+	return address, nil
 }

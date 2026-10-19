@@ -47,6 +47,25 @@ func TestTablesMatchCorpus(t *testing.T) {
 	}
 }
 
+// Holds do not depend on adapter order: Lemonade's store and the huggingface
+// store share one root, and a claim lands on the store whose manifests name
+// its path whichever adapter is listed first.
+func TestHoldsIndependentOfAdapterOrder(t *testing.T) {
+	env := machine(t)
+	adapters := snapshot.Adapters()
+	for i, j := 0, len(adapters)-1; i < j; i, j = i+1, j-1 {
+		adapters[i], adapters[j] = adapters[j], adapters[i]
+	}
+	r := snapshot.Take(env, adapters)
+	want, err := os.ReadFile(filepath.Join(fixture.Testdata(), "expected", "holds.tsv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := Tables(r.Page, env.Home)["holds.tsv"]; got != string(want) {
+		t.Errorf("holds.tsv with the adapters reversed:\n%s", firstDifference(string(want), got))
+	}
+}
+
 // Tables renders a source page as the §5.4 tables, one row per record, LF.
 func Tables(page content.SourcePage, home string) map[string]string {
 	norm := func(s string) string {

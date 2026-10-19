@@ -37,6 +37,23 @@ Lemonade's own downloader writes a repository's files straight into
 (`lemonade-sdk/lemonade`, `src/cpp/server/model_manager.cpp`: "Lemonade's
 own downloader writes real files without blobs").
 
+## 2026-10-31: LS-13, a hash on request
+
+A person's coding model already sat in their hub cache as a snapshot file
+with no blob, so this reader listed it with no digest and nothing could
+find it by content; the setup step offered a 23 GB download of it. The
+first cut hashed every such weights file in every known store in the
+background and let the manifest become content-addressed when the hash
+ended. Independent review rejected both parts: a FIFO queue at normal IO
+priority could put the one wanted file behind hundreds of gigabytes, which
+is the cost "Why LS-5 and LS-6 take this shape" declines; and a manifest
+whose id changed when its hash ended stopped resolving for a host or lend
+bound to the earlier id. LS-13 therefore hashes only a manifest a caller's
+`Verify` names, on local volumes, at background IO priority, and records
+the digest on the entry and object while the manifest keeps its id and
+name addressing. Listings still list every known store's models; listing
+needs no hash.
+
 ## 2026-09-23: shape review
 
 `research/reviews/providers-2026-09-23.md` F14 found this contract's whole
@@ -126,3 +143,47 @@ The public pickles in AICreator (`Wan2.2_VAE.pth`, the umT5 `.pth`, BLIP's
 `pytorch_model.bin`, SAM and Real-ESRGAN) are not pinned: LS-1 lists a
 pickle as an object so a router never offers it, and in this store listing
 it would only advertise a file no OA engine loads.
+
+## 2026-10-20: current Ollama, Lemonade and Jan stores (AD-06)
+
+The 0.8.0 plan's AD-06 asks this reader to read Ollama's `manifests-v2`
+layout and the current Lemonade and Jan stores, with Lemonade as its own
+adapter, so P-J1's library reads today's programs.
+
+| id | before | now |
+| --- | --- | --- |
+| LS-3 | Ollama's manifests came from `manifests/` only | `manifests-v2/` first, then the legacy tree, one name and one hold per model; a manifest list yields one manifest per runner-specific child, a reference child through its blob and an inline child in place; every manifest read through a `manifests-v2` name carries that name's own blob as an `ollama/manifest` entry |
+| LS-4 | no rule for Ollama | a Windows copy of a `manifests-v2` name is matched to the one present blob of its size and bytes that no manifest entry names except an `ollama/manifest` entry, at most 1 MiB compared and nothing hashed |
+| LS-3 | Jan's `model_sha256` was not read | it is the model file's digest with evidence `named` when `model_path` names a file; a value that is not 64 hex is `malformed_index`, and the model stays listed and held by Jan, name-addressed |
+
+Read from source: Ollama v0.40.6 `manifest/manifest.go` (`Manifest`,
+`MarshalJSON`, `isReference`, `NewManifestReference`, `ChildManifestDigest`,
+`parseManifest`, `referencedBlobDigestsForData`), `manifest/manifest_test.go`
+(`createManifestForTest`, `TestSelectManifestUsesRunnerPreference`) and
+`manifest/paths.go` (`encodeV2ManifestHost`, `decodeV2ManifestHost`). A
+reference child is `{mediaType, digest, runner, format}` with `runner` and
+`format` top-level and no size; an inline child is a full manifest with no
+digest; a nested list is refused; a `host:port` registry is spelled
+`host%3Aport` in `manifests-v2` and `host:port` in the legacy tree, which
+Windows skips. Ollama counts the named manifest's own blob, the list's blob,
+each child's blob and an inline child's computed digest as referenced. This
+reader holds the first three and computes no digest for an inline child,
+which is no file.
+
+Lemonade's selections in the shared Hugging Face cache become claims on the
+huggingface adapter's manifests. A claim lands on the store whose manifests
+name its path when two stores share a root (`snapshot.covering`), so adapter
+order does not decide it. A selection with no revision applies to every
+revision a ref names, or to every revision when no ref does, so a blob
+several revisions share is held through each of them; the reader before
+AD-06 held only the selected revision.
+
+Inferred and still to check live:
+
+| item | inferred from | live check that closes it |
+| --- | --- | --- |
+| Lemonade's service state directories `/var/lib/lemonade/.config/lemonade` and `/Library/Application Support/lemonade/.config/lemonade` | the per-user `.config/lemonade` layout placed under the service account's home; no upstream source cited, and no test, since `source.IsDir` is called on a fixed absolute path | Lemonade v2026.42.1 embeddable run as a system service on Linux and macOS, its configuration directory compared |
+| how a Lemonade selection spells a ModelScope repository (`<org>/<repo>` against `modelscope--models--<org>--<repo>`) | the cache directory name Lemonade writes | Lemonade v2026.42.1 embeddable pulling one ModelScope model, `user_models.json` and the registry read back |
+| Jan's MLX `model_path` naming the model's folder | the AD-06 implementer's reading of Jan's data-folder page; no `model.yml` written by Jan's MLX path was seen | a Jan v0.8.6 install on the owner's Mac downloading one MLX model |
+| the list child's runner field | answered from source: top-level `runner` and `format` (Ollama v0.40.6 `MarshalJSON`) | `ollama pull` with v0.40.6 of a model with runner-specific children, compared with `ollama list` |
+| the named manifest's own blob on Windows being a byte-equal copy | Ollama v0.40.6 `manifest/paths.go`'s link resolution | `ollama pull` with v0.40.6 on Windows and the snapshot's unheld bytes compared with `ollama list` |

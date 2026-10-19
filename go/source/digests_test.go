@@ -10,6 +10,63 @@ import (
 	"testing"
 )
 
+func TestDigestSameInodeRewriteRestoredTimeRehashes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "weights")
+	write(t, path, []byte("first bytes"))
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := NewDigests("")
+	if _, err := d.SHA256(path, info.Size(), info.ModTime()); !errors.Is(err, ErrPending) {
+		t.Fatal(err)
+	}
+	d.Wait()
+	old, err := d.SHA256(path, info.Size(), info.ModTime())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Wait() {
+		t.Fatal("unchanged cache hit queued another hash")
+	}
+	rewriteStampedFile(t, path, []byte("other bytes"))
+	if _, err := d.SHA256(path, info.Size(), info.ModTime()); !errors.Is(err, ErrPending) {
+		t.Fatal("stale digest returned", err)
+	}
+	d.Wait()
+	got, err := d.SHA256(path, info.Size(), info.ModTime())
+	sum := sha256.Sum256([]byte("other bytes"))
+	want := hex.EncodeToString(sum[:])
+	if err != nil || got != want || got == old {
+		t.Fatal(got, old, err)
+	}
+}
+
+func TestDigestVersionTwoRecordIsNotReused(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "weights")
+	record := filepath.Join(dir, "private", "inventoryd", "digests.json")
+	write(t, path, []byte("first bytes"))
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := NewDigests(record)
+	d.SHA256(path, info.Size(), info.ModTime())
+	d.Wait()
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data), `"version": 3`, `"version": 2`, 1))
+	if err := os.WriteFile(record, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if again := NewDigests(record); len(again.at) != 0 {
+		t.Fatal("v2 digest admitted without change stamp")
+	}
+}
+
 // LS-12: a lookup never reads the file; the background hash records the
 // digest in a private folder, a malformed or non-private record is ignored,
 // a stated size the file does not have fails that hash without a record,
@@ -42,7 +99,7 @@ func TestDigestsRecordSurvivesAndRecovers(t *testing.T) {
 	if err != nil || got != want {
 		t.Fatalf("digest %q %v, want %q", got, err, want)
 	}
-	if again := NewDigests(record); len(again.at) != 1 || again.at[file].SHA256 != want || again.at[file].FileID == "" {
+	if again := NewDigests(record); len(again.at) != 1 || again.at[file].SHA256 != want || again.at[file].Stamp == "" {
 		t.Fatalf("reloaded record %+v", again.at)
 	}
 	if err := os.WriteFile(record, []byte("{not json"), 0o600); err != nil {

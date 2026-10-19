@@ -2,11 +2,19 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"github.com/openabstractions/abstraction-facade/go-core/bootstrap"
+	"github.com/openabstractions/abstraction-identity/listen"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	content "github.com/openabstractions/abstraction-storage/go/abstraction/storage/content"
 
@@ -65,6 +73,11 @@ func TestServeEnvironmentCanOmitAmbientRootsWithoutChangingOtherCommands(t *test
 	}
 	if snapshotEnv.IgnoreEnvironmentRoots {
 		t.Fatal("legacy snapshot behavior silently changed")
+	}
+	// Both read GGUF headers, so a descriptor names the architecture and
+	// the trained context.
+	if serve.Headers == nil || snapshotEnv.Headers == nil {
+		t.Fatal("inventoryd reads no GGUF header")
 	}
 }
 
@@ -152,5 +165,109 @@ func TestSnapshotJSONWithConfig(t *testing.T) {
 	var bad bytes.Buffer
 	if code := run([]string{"snapshot", "--json", "--config", filepath.Join(home, "missing.json")}, &out, &bad, getenv); code != 2 {
 		t.Fatalf("missing config exit %d", code)
+	}
+}
+
+// Naming is exercised through a real owned socket/pipe; no provider engine runs.
+func TestLeafEndpointNamingAndReceiving(t *testing.T) {
+	parent, err := os.MkdirTemp("", "st5-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(parent); err != nil {
+			t.Error(err)
+		}
+	})
+	if runtime.GOOS != "windows" {
+		t.Setenv("TMPDIR", parent)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	name := fmt.Sprintf("st5-leaf-%d", os.Getpid())
+	if address, err := serveEndpoint(name); address != "" || !errors.Is(err, bootstrap.ErrNoTrustedInstallation) {
+		t.Fatalf("default name escaped test refusal: %q %v", address, err)
+	}
+	address := filepath.Join(parent, name+".sock")
+	if runtime.GOOS == "windows" {
+		address = `\\.\pipe\oa-test-` + name
+	}
+
+	if actual, err := serveEndpoint(address); err != nil || actual != address {
+		t.Fatalf("explicit address changed: %q %v", actual, err)
+	}
+	for _, explicit := range []string{`/owned/path with spaces/name.sock`, `C:\owned\path with spaces\name.sock`, `\\.\pipe\owned.Name_test`} {
+		if actual, err := serveEndpoint(explicit); err != nil || actual != explicit {
+			t.Fatalf("explicit %q changed to %q: %v", explicit, actual, err)
+		}
+	}
+	listener, err := listen.Listen(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stopListener := context.AfterFunc(ctx, func() { listener.Close() })
+	defer stopListener()
+	answered := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			answered <- err
+			return
+		}
+		defer conn.Close()
+		stop := context.AfterFunc(ctx, func() { conn.Close() })
+		defer stop()
+		var request [1]byte
+		if _, err = io.ReadFull(conn, request[:]); err == nil {
+			if request[0] != 'q' {
+				err = fmt.Errorf("unexpected request %q", request[0])
+			} else {
+				_, err = conn.Write([]byte{'r'})
+			}
+		}
+		answered <- err
+	}()
+	conn, err := listen.Dial(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	stopConn := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stopConn()
+	if _, err = conn.Write([]byte{'q'}); err != nil {
+		t.Fatal(err)
+	}
+	var reply [1]byte
+	if _, err = io.ReadFull(conn, reply[:]); err != nil || reply[0] != 'r' {
+		t.Fatalf("reply %q: %v", reply, err)
+	}
+	if err := <-answered; err != nil {
+		t.Fatal(err)
+	}
+}
+func TestLeafEndpointRefusesBeforeProviderWork(t *testing.T) {
+	for _, name := range []string{"model.v1", "model_v1", "Model", "model name"} {
+		var output, diagnostics bytes.Buffer
+		code := run([]string{"serve", "--endpoint", name}, &output, &diagnostics, func(string) string { return "" })
+		if code != 2 || !strings.Contains(diagnostics.String(), "[a-z0-9-]+") || !strings.Contains(diagnostics.String(), "explicit absolute endpoint path") || output.Len() != 0 {
+			t.Fatalf("%q: code %d, output %q, diagnostics %q", name, code, output.String(), diagnostics.String())
+		}
+	}
+	if runtime.GOOS != "windows" {
+		// A short name resolves in the runtime directory below; test binaries
+		// need the opt-in to resolve installed endpoints at all.
+		t.Setenv("OA_TEST_ALLOW_INSTALLED_RUNTIME", "1")
+		dir := t.TempDir()
+		if err := os.Chmod(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("XDG_RUNTIME_DIR", dir)
+		var output, diagnostics bytes.Buffer
+		code := run([]string{"serve", "--endpoint", "leaf-v1"}, &output, &diagnostics, func(string) string { return "" })
+		if code != 2 || !strings.Contains(diagnostics.String(), "private") || output.Len() != 0 {
+			t.Fatalf("namespace: code %d, output %q, diagnostics %q", code, output.String(), diagnostics.String())
+		}
 	}
 }

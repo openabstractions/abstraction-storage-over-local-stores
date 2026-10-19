@@ -2,7 +2,7 @@ package source
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
+	digestfmt "github.com/openabstractions/abstraction-storage/go/digest"
 	"io"
 	"os"
 	"path/filepath"
@@ -323,7 +323,7 @@ func NewManifest(store, kind string, entries []content.Entry, names []content.Na
 	}
 	sum := sha256.Sum256(canonicalIdentity(addressing, kind, entries, names, descriptor))
 	return content.Manifest{
-		ID:         "sha256:" + hex.EncodeToString(sum[:]),
+		ID:         digestfmt.Hex(sum[:]),
 		Addressing: addressing,
 		Kind:       kind,
 		Entries:    entries,
@@ -331,6 +331,42 @@ func NewManifest(store, kind string, entries []content.Entry, names []content.Na
 		Descriptor: descriptor,
 		Store:      store,
 	}
+}
+
+// WithRecordedDigests puts each digest an on-demand hash recorded (LS-13)
+// on the entries it names by locator, leaving the manifest's id and
+// addressing as NewManifest made them: a recorded digest is a fact about
+// the file now, and a hash that ends, or a stamp that changes, never
+// renames the manifest that hosts and lends bind by id.
+func WithRecordedDigests(m content.Manifest, recorded map[string]string) content.Manifest {
+	if len(recorded) == 0 {
+		return m
+	}
+	entries := append([]content.Entry(nil), m.Entries...)
+	for i, e := range entries {
+		if d := recorded[e.Locator]; d != "" && e.Digest == "" {
+			entries[i].Digest, entries[i].Evidence = d, content.EvidenceHashed
+		}
+	}
+	m.Entries = entries
+	return m
+}
+
+// identityKey reports whether a descriptor key is part of a manifest's
+// identity. What only a GGUF header says (the architecture, size label,
+// fine-tune, trained context and the base a weights file was tuned from)
+// describes the same bytes the names and digests already identify, so
+// reading a header never renames a manifest and a model a host declared by
+// its id keeps that id. A component's base, read from its own name, stays.
+func identityKey(k string, descriptor map[string]string) bool {
+	switch k {
+	case "architecture", "size_label", "finetune", "context_length":
+		return false
+	case "base":
+		role := descriptor["role"]
+		return role != "" && role != RoleWeights
+	}
+	return true
 }
 
 // canonicalIdentity is the identity document of a manifest in this
@@ -362,11 +398,13 @@ func canonicalIdentity(addressing content.Addressing, kind string, entries []con
 		out = append(out, '}')
 	}
 	out = append(out, ']')
-	if len(descriptor) > 0 {
-		keys := make([]string, 0, len(descriptor))
-		for k := range descriptor {
+	keys := make([]string, 0, len(descriptor))
+	for k := range descriptor {
+		if identityKey(k, descriptor) {
 			keys = append(keys, k)
 		}
+	}
+	if len(keys) > 0 {
 		sort.Strings(keys) // Go compares strings bytewise: UTF-8 byte order
 		out = append(out, `,"descriptor":{`...)
 		for i, k := range keys {

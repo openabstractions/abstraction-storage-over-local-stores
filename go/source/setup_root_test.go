@@ -62,3 +62,67 @@ func TestSetupInventoryRootConfigRefusesDirectoryReplacement(t *testing.T) {
 		t.Fatalf("replacement folder kept the saved identity: %v", err)
 	}
 }
+
+func TestSetupInventoryRootAcceptsThePictureStoreWithItsCatalogue(t *testing.T) {
+	selected := filepath.Join(t.TempDir(), "pt")
+	if err := os.Mkdir(selected, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root, err := NewSetupInventoryRoot(selected, SetupPictureStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := PinnedFile{Path: "flux2-klein-4b/tokenizer/vocab.json", Size: 2776833,
+		SHA256: "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"}
+	root.Files = []PinnedFile{pin}
+	data, err := SetupInventoryRootConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(writeConfig(t, data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.ExtraRoots) != 1 || config.ExtraRoots[0].Store != "oa-picture" || len(config.ExtraRoots[0].Files) != 1 ||
+		config.ExtraRoots[0].Files[0] != pin {
+		t.Fatalf("picture store config: %s", data)
+	}
+	for _, bad := range []PinnedFile{
+		{Path: "../outside.safetensors", Size: 1, SHA256: pin.SHA256},
+		{Path: `flux2-klein-4b\tokenizer\vocab.json`, Size: 1, SHA256: pin.SHA256},
+		{Path: "vocab.json", Size: 0, SHA256: pin.SHA256},
+		{Path: "vocab.json", Size: 1, SHA256: "SHA"},
+	} {
+		root.Files = []PinnedFile{bad}
+		if _, err := SetupInventoryRootConfig(root); err == nil {
+			t.Fatalf("pinned file %+v was accepted", bad)
+		}
+	}
+	root.Files = []PinnedFile{pin}
+	for _, bad := range [][]PinnedModel{
+		{{Name: "", Files: []string{pin.Path}}},
+		{{Name: "z-image-turbo"}},
+		{{Name: "z-image-turbo", Files: []string{"unpinned.safetensors"}}},
+		{{Name: "z-image-turbo", Files: []string{pin.Path}}, {Name: "z-image-turbo", Files: []string{pin.Path}}},
+	} {
+		root.Models = bad
+		if _, err := SetupInventoryRootConfig(root); err == nil {
+			t.Fatalf("models %+v were accepted", bad)
+		}
+	}
+	root.Models = []PinnedModel{{Name: "z-image-turbo", Files: []string{pin.Path}}}
+	if data, err := SetupInventoryRootConfig(root); err != nil || !strings.Contains(string(data), `"models"`) {
+		t.Fatalf("models config: %v %s", err, data)
+	}
+	if _, err := NewSetupInventoryRoot(selected, "oa-picture-2"); err == nil {
+		t.Fatal("an unreserved picture store name was accepted")
+	}
+}
+
+func writeConfig(t *testing.T, data []byte) string {
+	path := filepath.Join(t.TempDir(), "inventoryd.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}

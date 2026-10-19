@@ -52,6 +52,12 @@ type General struct {
 	// Base names the model this one was derived from: the first base model's
 	// name, or its repository when it has no name.
 	Base string
+	// Type is general.type: "model" for weights, "mmproj" for a vision
+	// projector, empty when the converter wrote none.
+	Type string
+	// ContextLength is <general.architecture>.context_length, the context the
+	// model was trained for, in tokens; zero when the header states none.
+	ContextLength uint64
 	// Truncated says the read reached Budget before the header ended, so an
 	// absent field may still be in the file.
 	Truncated bool
@@ -111,25 +117,40 @@ func ReadFrom(r io.Reader) (General, error) {
 		if err != nil {
 			if errors.Is(err, errBudget) {
 				g.Truncated = true
-				return g, nil
+				return d.finish(g), nil
 			}
 			return g, err
+		}
+		// A converter writes the general metadata, then the architecture's
+		// parameters, then the tokenizer: the first tokenizer key after the
+		// general metadata ends the read before its arrays.
+		if strings.HasPrefix(key, "tokenizer.") && complete(seen) {
+			return d.finish(g), nil
 		}
 		if err := d.value(&g, key); err != nil {
 			if errors.Is(err, errBudget) {
 				g.Truncated = true
-				return g, nil
+				return d.finish(g), nil
 			}
 			return g, err
 		}
 		if len(key) > 8 && key[:8] == "general." {
 			seen[key] = true
 		}
-		if complete(seen) {
+		if g = d.finish(g); complete(seen) && (g.ContextLength > 0 || g.Architecture == "") {
 			return g, nil
 		}
 	}
-	return g, nil
+	return d.finish(g), nil
+}
+
+// finish sets ContextLength from the <architecture>.context_length read,
+// once the architecture is known.
+func (d *decoder) finish(g General) General {
+	if g.ContextLength == 0 && g.Architecture != "" {
+		g.ContextLength = d.contexts[g.Architecture+".context_length"]
+	}
+	return g
 }
 
 func complete(seen map[string]bool) bool {
@@ -194,6 +215,8 @@ func (d *decoder) value(g *General, key string) error {
 			if g.Base == "" {
 				g.Base = repoOf(s)
 			}
+		case "general.type":
+			g.Type = s
 		}
 		return nil
 	case tArray:
@@ -210,13 +233,46 @@ func (d *decoder) value(g *General, key string) error {
 	if key == "general.file_type" && kind == tUint32 {
 		g.Quant = QuantOf(binary.LittleEndian.Uint32(b))
 	}
+	if strings.HasSuffix(key, ".context_length") && !strings.HasPrefix(key, "general.") {
+		var n uint64
+		switch kind {
+		case tUint32:
+			n = uint64(binary.LittleEndian.Uint32(b))
+		case tInt32:
+			if v := int32(binary.LittleEndian.Uint32(b)); v > 0 {
+				n = uint64(v)
+			}
+		case tUint64:
+			n = binary.LittleEndian.Uint64(b)
+		case tInt64:
+			if v := int64(binary.LittleEndian.Uint64(b)); v > 0 {
+				n = uint64(v)
+			}
+		}
+		if n > 0 && n <= math.MaxInt32 {
+			if d.contexts == nil {
+				d.contexts = map[string]uint64{}
+			}
+			d.contexts[key] = n
+		}
+	}
 	return nil
 }
 
 // skipArray reads past an array value. A fixed-width element array is one
 // discard; a string array is a length and a discard per element; a nested
 // array is read the same way, recursively.
-func (d *decoder) skipArray() error {
+// maxArrayDepth bounds nested arrays. A converter writes arrays of scalars
+// or strings; a deeper nest is a malformed header, refused before its
+// recursion grows the stack.
+const maxArrayDepth = 8
+
+func (d *decoder) skipArray() error { return d.skipNested(0) }
+
+func (d *decoder) skipNested(depth int) error {
+	if depth >= maxArrayDepth {
+		return errors.New("arrays nest too deep")
+	}
 	kind, err := d.u32()
 	if err != nil {
 		return err
@@ -242,7 +298,7 @@ func (d *decoder) skipArray() error {
 				return err
 			}
 		case tArray:
-			if err := d.skipArray(); err != nil {
+			if err := d.skipNested(depth + 1); err != nil {
 				return err
 			}
 		default:
@@ -284,6 +340,9 @@ var errBudget = errors.New("header budget reached")
 type decoder struct {
 	r    *bufio.Reader
 	left int64
+	// contexts are the *.context_length values read, by key; finish picks
+	// the architecture's own.
+	contexts map[string]uint64
 }
 
 func (d *decoder) take(n int64) error {

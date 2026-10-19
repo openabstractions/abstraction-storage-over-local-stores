@@ -11,11 +11,10 @@ import (
 	"sort"
 	"strings"
 
-	"gopkg.in/yaml.v3"
-
 	content "github.com/openabstractions/abstraction-storage/go/abstraction/storage/content"
 
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/tree"
+	"github.com/openabstractions/abstraction-storage-over-local-stores/go/internal/indexyaml"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/source"
 
 	identity "github.com/openabstractions/abstraction-identity"
@@ -88,26 +87,30 @@ func readExtraPaths(env source.Env, file string) ([]source.Claim, []content.Stor
 	if err != nil {
 		return nil, []content.StoreError{{Kind: source.ErrorUnreadableIndex, Locator: file, Detail: err.Error()}}
 	}
-	var doc map[string]map[string]any
-	if err := yaml.Unmarshal(b, &doc); err != nil {
+	doc, err := indexyaml.Parse(b)
+	if err == nil && doc.Kind != indexyaml.Map && doc.Kind != indexyaml.Null {
+		err = fmt.Errorf("top level is not a mapping")
+	}
+	if err != nil {
 		return nil, []content.StoreError{{Kind: source.ErrorMalformedIndex, Locator: file, Detail: err.Error()}}
 	}
 	dir := filepath.Dir(file)
-	var sections []string
-	for s := range doc {
-		sections = append(sections, s)
-	}
+	sections := append([]string(nil), doc.Keys...)
 	sort.Strings(sections)
 	var claims []source.Claim
 	var errs []content.StoreError
 	for _, section := range sections {
-		conf := doc[section]
-		if conf == nil {
+		conf := doc.Map[section]
+		if conf.Kind == indexyaml.Null {
+			continue
+		}
+		if conf.Kind != indexyaml.Map {
+			errs = append(errs, content.StoreError{Kind: source.ErrorMalformedIndex, Locator: file, Detail: section + " is not a mapping"})
 			continue
 		}
 		base := ""
-		if v, ok := conf["base_path"]; ok {
-			s, ok := v.(string)
+		if v := conf.Get("base_path"); v != nil {
+			s, ok := v.String()
 			if !ok {
 				errs = append(errs, content.StoreError{Kind: source.ErrorMalformedIndex, Locator: file, Detail: section + ".base_path is not a string"})
 				continue
@@ -119,7 +122,7 @@ func readExtraPaths(env source.Env, file string) ([]source.Claim, []content.Stor
 			base = filepath.Clean(base)
 		}
 		var types []string
-		for k := range conf {
+		for _, k := range conf.Keys {
 			if k != "base_path" && k != "is_default" {
 				types = append(types, k)
 			}
@@ -129,7 +132,7 @@ func readExtraPaths(env source.Env, file string) ([]source.Claim, []content.Stor
 			if typ == "custom_nodes" {
 				continue // code, not model content
 			}
-			s, ok := conf[typ].(string)
+			s, ok := conf.Get(typ).String()
 			if !ok {
 				errs = append(errs, content.StoreError{Kind: source.ErrorMalformedIndex, Locator: file, Detail: section + "." + typ + " is not a string"})
 				continue
@@ -162,7 +165,7 @@ func readExtraPaths(env source.Env, file string) ([]source.Claim, []content.Stor
 // with no holder of its own: ComfyUI holds only what its yaml names there.
 func (Adapter) Observe(loc content.Store, env source.Env) source.StoreObservation {
 	if strings.HasPrefix(loc.Name, "comfyui-extra:") {
-		return tree.Observe(loc, env, tree.Options{Scheme: "comfyui"})
+		return tree.Observe(loc, env, tree.Options{Scheme: program})
 	}
-	return tree.Observe(loc, env, tree.Options{Scheme: "comfyui", Holder: program, Purpose: source.PurposeInstalled, Index: "models tree"})
+	return tree.Observe(loc, env, tree.Options{Scheme: program, Holder: program, Purpose: source.PurposeInstalled, Index: "models tree"})
 }

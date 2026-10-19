@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -52,7 +53,7 @@ func TestEveryStoreOnOneMachine(t *testing.T) {
 		}
 	}
 	fixture.Equal(t, "present stores", names, []string{
-		"ollama", "huggingface", "lemonade-extra", "lmstudio", "comfyui", "fastflowlm", "jan",
+		"ollama", "huggingface", "lemonade-cache", "lemonade-extra", "lmstudio", "comfyui", "fastflowlm", "jan",
 		"stabilitymatrix", "pinokio", "nas", "comfyui-extra:a111", "swarmui",
 	})
 	d := r.Description
@@ -246,4 +247,38 @@ func contains(s []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// Every store an adapter names on a machine is in Stores, unless its name is
+// one only that machine knows. The machine also has a Jan model whose weights
+// sit outside every store, so a claim makes the jan-external store.
+func TestStoresNamesEveryAdapterStore(t *testing.T) {
+	env := machine(t)
+	jan, _ := store(t, snapshot.Take(env, snapshot.Adapters()), "jan")
+	weights := filepath.Join(env.Home, "JanImports", "outside.gguf")
+	for path, body := range map[string]string{
+		weights: "GGUF",
+		filepath.Join(jan.Locator, "outside", "model.yml"): "model_path: " + filepath.ToSlash(weights) + "\nname: outside\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := snapshot.Take(env, snapshot.Adapters())
+	var checked []string
+	for _, s := range r.Stores {
+		if strings.Contains(s.Name, "#") || strings.HasPrefix(s.Name, "comfyui-extra:") || s.Name == "nas" {
+			continue
+		}
+		checked = append(checked, s.Name)
+		if !slices.Contains(snapshot.Stores, s.Name) {
+			t.Errorf("adapter store %q is missing from snapshot.Stores", s.Name)
+		}
+	}
+	if !slices.Contains(checked, "jan-external") || len(checked) < 12 {
+		t.Fatalf("checked stores %v, want the fixture's fixed names and jan-external", checked)
+	}
 }

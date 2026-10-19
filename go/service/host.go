@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os/user"
-	"strconv"
 	"sync"
 	"time"
 
@@ -35,7 +34,7 @@ type Host struct {
 	cancel   context.CancelFunc
 	once     sync.Once
 	workers  sync.WaitGroup
-	slots    chan struct{}
+	slots    listen.CallAdmission
 
 	lifecycle sync.Mutex
 	serving   bool
@@ -61,7 +60,7 @@ func Listen(endpoint string, source *Source) (*Host, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Host{source: source, listener: listen.Sessions(l, listen.SessionOptions{MaxSessions: 16}), owner: owner.Uid, ctx: ctx, cancel: cancel, slots: make(chan struct{}, 16)}, nil
+	return &Host{source: source, listener: listen.Sessions(l, listen.SessionOptions{MaxSessions: 16}), owner: owner.Uid, ctx: ctx, cancel: cancel, slots: listen.NewCallAdmission(16)}, nil
 }
 
 // Close stops accepting and ends waits in progress.
@@ -93,17 +92,14 @@ func (h *Host) Serve(ctx context.Context) error {
 			}
 			return err
 		}
-		select {
-		case h.slots <- struct{}{}:
-		default:
-			//unchecked: dropping a connection because the worker slots are full; nothing here can act on a failed close of the connection it is already refusing
-			conn.Close()
+		release, admitted := h.slots.Take(conn)
+		if !admitted {
 			continue
 		}
 		h.workers.Add(1)
 		go func() {
 			defer h.workers.Done()
-			defer func() { <-h.slots }()
+			defer release()
 			defer conn.Close()
 			callCtx, cancel := context.WithTimeout(h.ctx, callBudget)
 			defer cancel()
@@ -143,18 +139,17 @@ func (r *receiver) admit() (forbidden bool, err error) {
 }
 
 func (h *Host) admits(peer *identity.Peer) (forbidden bool, err error) {
-	u, err := peer.User.AtLeast(listen.Program.User)
-	if err != nil {
+	_, verdict := identity.AdmitOwner(peer, identity.Need{User: listen.Program.User}, h.owner)
+	if verdict == identity.OwnerIdentityRequired || verdict == identity.OwnerUnavailable {
 		return false, &content.ServiceError{Code: content.ServiceErrorCodeIdentityRequired}
 	}
-	principal := ""
-	switch u.Kind {
-	case "windows":
-		principal = u.SID
-	case "posix":
-		principal = strconv.Itoa(u.UID)
+	if verdict == identity.OwnerOtherAccount {
+		return true, nil
 	}
-	return principal == "" || principal != h.owner, nil
+	if verdict != identity.OwnerAdmitted {
+		return false, &content.ServiceError{Code: content.ServiceErrorCodeCallerUnavailable}
+	}
+	return false, nil
 }
 
 func (r *receiver) Describe() (content.SourceDescription, error) {
@@ -175,7 +170,19 @@ func (r *receiver) Observe(cursor string, maxChanges, waitMs int64) (content.Sou
 	if forbidden, err := r.admit(); err != nil || forbidden {
 		return refusal(content.SourcePageOutcomeForbidden), err
 	}
-	return r.host.source.ObserveContext(r.call.WaitContext(), cursor, maxChanges, waitMs)
+	forbidden := false
+	var admissionErr error
+	page, err := r.host.source.observeContext(r.call.WaitContext(), cursor, maxChanges, waitMs, func() error {
+		forbidden, admissionErr = r.admit()
+		if forbidden && admissionErr == nil {
+			return errors.New("inventory observation forbidden")
+		}
+		return admissionErr
+	})
+	if forbidden {
+		return refusal(content.SourcePageOutcomeForbidden), admissionErr
+	}
+	return page, err
 }
 
 func (r *receiver) Verify(target string) (content.SourcePage, error) {

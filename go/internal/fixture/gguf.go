@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"os"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -15,6 +16,8 @@ type GGUFValue struct {
 	// Arr is a string array, the shape of the tokenizer vocabulary a header
 	// read has to walk past without holding it.
 	Arr []string
+	// Bool is a bool value, the shape of a projector's encoder flags.
+	Bool *bool
 }
 
 // GGUFString is a string value.
@@ -22,6 +25,9 @@ func GGUFString(s string) GGUFValue { return GGUFValue{Str: s} }
 
 // GGUFUint32 is a uint32 value.
 func GGUFUint32(v uint32) GGUFValue { u := v; return GGUFValue{U32: &u} }
+
+// GGUFBool is a bool value.
+func GGUFBool(v bool) GGUFValue { b := v; return GGUFValue{Bool: &b} }
 
 // GGUFStrings is a string-array value.
 func GGUFStrings(s ...string) GGUFValue { return GGUFValue{Arr: s} }
@@ -46,6 +52,13 @@ func GGUF(tensors uint64, kv []GGUFKV, trailing int) []byte {
 		case p.Value.U32 != nil:
 			out = binary.LittleEndian.AppendUint32(out, 4) // uint32
 			out = binary.LittleEndian.AppendUint32(out, *p.Value.U32)
+		case p.Value.Bool != nil:
+			out = binary.LittleEndian.AppendUint32(out, 7) // bool
+			if *p.Value.Bool {
+				out = append(out, 1)
+			} else {
+				out = append(out, 0)
+			}
 		case p.Value.Arr != nil:
 			out = binary.LittleEndian.AppendUint32(out, 9) // array
 			out = binary.LittleEndian.AppendUint32(out, 8) // of string
@@ -76,7 +89,7 @@ func GGUFModel(d map[string]string, vocab int, trailing int) []byte {
 			return
 		}
 		written[k] = true
-		if k == "general.file_type" || k == "general.quantization_version" || k == "general.base_model.count" {
+		if k == "general.file_type" || k == "general.quantization_version" || k == "general.base_model.count" || strings.HasSuffix(k, ".context_length") {
 			kv = append(kv, GGUFKV{k, GGUFUint32(uint32(atoi(v)))})
 			return
 		}

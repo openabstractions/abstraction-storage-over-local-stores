@@ -1,0 +1,12 @@
+batch_size: 2048
+embedding: true
+embedding_check_v: 3
+model_path: llamacpp/models/sentence-transformer-mini/model.gguf
+mtp_check_v: 1
+mtp_layers: 0
+name: all-MiniLM-L6-v2
+pooling: mean
+size_bytes: 45949216
+template_kwargs: []
+template_kwargs_check_v: 1
+ubatch_size: 2048

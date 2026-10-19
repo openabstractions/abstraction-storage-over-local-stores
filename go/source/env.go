@@ -61,6 +61,15 @@ type ExtraRoot struct {
 	// directory. The extra adapter reports an error instead of reading a
 	// replacement directory.
 	ExpectedFileKey string `json:"expected_file_key,omitempty"`
+	// Files are the files a reserved Setup store holds by its catalogue: each
+	// one's path below Path, size and SHA-256, which Setup verified when it
+	// staged it. A file at that path and size is reported with that digest
+	// as hashed evidence and is not hashed again (SetupInventoryRoot).
+	Files []PinnedFile `json:"files,omitempty"`
+	// Models are the catalogue's models, each named with the pinned files it
+	// is made of. A model all of whose files are present is reported as one
+	// model manifest named by it (pinned.go).
+	Models []PinnedModel `json:"models,omitempty"`
 }
 
 // LoadConfig reads an operator configuration file. An empty path is no
@@ -122,21 +131,25 @@ func (e Env) RoamingConfig() string {
 	case "darwin":
 		return filepath.Join(e.Home, "Library", "Application Support")
 	default:
-		if v := e.env("XDG_CONFIG_HOME"); v != "" {
-			return v
-		}
-		return filepath.Join(e.Home, ".config")
+		return e.ConfigHome()
 	}
+}
+
+// ConfigHome is the XDG base directory for configuration on every platform:
+// $XDG_CONFIG_HOME when set, else ~/.config. Programs that follow XDG on
+// macOS and Windows too (.NET on macOS, Lemonade) read it there.
+func (e Env) ConfigHome() string {
+	if v := e.env("XDG_CONFIG_HOME"); v != "" {
+		return v
+	}
+	return filepath.Join(e.Home, ".config")
 }
 
 // DotnetAppData is .NET's Environment.SpecialFolder.ApplicationData, which is
 // ~/.config (or $XDG_CONFIG_HOME) on macOS as well as Linux.
 func (e Env) DotnetAppData() string {
 	if e.GOOS == "darwin" {
-		if v := e.env("XDG_CONFIG_HOME"); v != "" {
-			return v
-		}
-		return filepath.Join(e.Home, ".config")
+		return e.ConfigHome()
 	}
 	return e.RoamingConfig()
 }

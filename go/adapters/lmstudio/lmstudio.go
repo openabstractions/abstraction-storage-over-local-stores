@@ -71,5 +71,5 @@ func (Adapter) Discover(env source.Env) source.Discovery {
 }
 
 func (Adapter) Observe(loc content.Store, env source.Env) source.StoreObservation {
-	return tree.Observe(loc, env, tree.Options{Scheme: "lmstudio", Holder: program, Purpose: source.PurposeInstalled, Index: "models folder tree"})
+	return tree.Observe(loc, env, tree.Options{Scheme: program, Holder: program, Purpose: source.PurposeInstalled, Index: "models folder tree"})
 }

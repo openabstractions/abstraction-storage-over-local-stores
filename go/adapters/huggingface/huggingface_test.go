@@ -1,6 +1,8 @@
 package huggingface_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -22,9 +24,10 @@ func TestDiscovery(t *testing.T) {
 	if !hub.Present || !fixture.SamePath(hub.Locator, filepath.Join(home, ".cache", "huggingface", "hub")) || !strings.Contains(hub.Rule, "default") {
 		t.Fatalf("default hub %+v", hub)
 	}
-	extra := fixture.Location(t, d, "lemonade-extra")
-	if !extra.Present || extra.Program != "lemonade" || !fixture.SamePath(extra.Locator, filepath.Join(home, "LemonadeExtra")) || !strings.Contains(extra.Rule, "extra_models_dir") {
-		t.Fatalf("lemonade extra %+v", extra)
+	for _, s := range d.Stores {
+		if s.Program != "huggingface" {
+			t.Fatalf("the huggingface adapter reports another program's store %+v", s)
+		}
 	}
 
 	for _, c := range []struct {
@@ -54,7 +57,9 @@ func TestEmptyAndMissing(t *testing.T) {
 	fixture.EmptyAndMissing(t, huggingface.New(), "huggingface", ".cache/huggingface/hub")
 }
 
-func TestSnapshotsRefsAndLemonade(t *testing.T) {
+// The cache alone: Lemonade's holds on these manifests come from the
+// lemonade adapter's claims (adapters/lemonade).
+func TestSnapshotsAndRefs(t *testing.T) {
 	home := fixture.Home(t, "hf")
 	o := fixture.Observe(t, huggingface.New(), fixture.Env(home, nil), "huggingface")
 	if len(o.Errors) != 0 {
@@ -73,22 +78,21 @@ func TestSnapshotsRefsAndLemonade(t *testing.T) {
 		"hf:acme/Tiny-GGUF:mmproj-F16.gguf",
 	})
 
-	// One unit held by two programs: the hub's ref and Lemonade's registry.
 	q4 := fixture.MustManifest(t, o, "hf", "acme/Tiny-GGUF:Tiny-Q4_K_M.gguf")
-	fixture.Equal(t, "q4 holders", fixture.Holders(q4), []string{"huggingface", "lemonade"})
+	fixture.Equal(t, "q4 holders", fixture.Holders(q4), []string{"huggingface"})
 	fixture.Equal(t, "q4 roles", fixture.Roles(q4), []string{"weights", "weights.config"})
 	if e := q4.Manifest.Entries[0]; e.Size != 3000 || e.Evidence != content.EvidenceNone || e.Digest != "" || e.MediaType != "application/vnd.gguf" {
 		t.Fatalf("q4 entry %+v", e)
 	}
 	fixture.Equal(t, "q8 holders", fixture.Holders(fixture.MustManifest(t, o, "hf", "acme/Tiny-GGUF:Tiny-Q8_0.gguf")), []string{"huggingface"})
 	mm := fixture.MustManifest(t, o, "hf", "acme/Tiny-GGUF:mmproj-F16.gguf")
-	fixture.Equal(t, "mmproj holders", fixture.Holders(mm), []string{"huggingface", "lemonade"})
+	fixture.Equal(t, "mmproj holders", fixture.Holders(mm), []string{"huggingface"})
 	fixture.Equal(t, "mmproj roles", fixture.Roles(mm), []string{"projector", "weights.config"})
 
-	// A multi-entry manifest from shards; held by user_models.json.
+	// A multi-entry manifest from shards.
 	sh := fixture.MustManifest(t, o, "hf", "acme/Shard:Q4_K_XL/S-Q4_K_XL.gguf")
 	fixture.Equal(t, "shard roles", fixture.Roles(sh), []string{"weights", "weights"})
-	fixture.Equal(t, "shard holders", fixture.Holders(sh), []string{"huggingface", "lemonade"})
+	fixture.Equal(t, "shard holders", fixture.Holders(sh), []string{"huggingface"})
 	// A detached revision: no ref names it, nobody holds it.
 	fixture.Equal(t, "detached holders", fixture.Holders(fixture.MustManifest(t, o, "hf", "acme/Shard@"+oldRev[:12]+":Shard-old.gguf")), []string(nil))
 	snap := fixture.MustManifest(t, o, "hf", "acme/Partial-GGUF@"+partialRev[:12])
@@ -96,27 +100,8 @@ func TestSnapshotsRefsAndLemonade(t *testing.T) {
 		t.Fatalf("weightless revision kind %s", snap.Manifest.Kind)
 	}
 
-	// Lemonade's evidence is recorded per hold: the index, the model key and
-	// the role inside it.
-	fixture.Equal(t, "q4 bases", fixture.Bases(q4), []string{
-		"huggingface models--acme--Tiny-GGUF/refs/main|main|",
-		"lemonade models--acme--Tiny-GGUF/.lemonade_registry.json|Tiny-GGUF|main",
-	})
-	fixture.Equal(t, "mmproj bases", fixture.Bases(mm), []string{
-		"huggingface models--acme--Tiny-GGUF/refs/main|main|",
-		"lemonade models--acme--Tiny-GGUF/.lemonade_registry.json|Tiny-GGUF|mmproj",
-	})
-	var userModels bool
-	for _, h := range sh.Holds {
-		if h.Holder.Program == "lemonade" && h.Target == sh.Manifest.ID && h.Basis != nil && strings.HasSuffix(filepath.ToSlash(h.Basis.Index), ".config/lemonade/user_models.json") && h.Basis.Key == "Shard-Q4_K_XL" && h.Basis.Role == "main" {
-			userModels = true
-		}
-	}
-	if !userModels {
-		t.Fatalf("user_models.json basis missing: %v", fixture.Bases(sh))
-	}
-	if len(o.Dangling) != 1 || o.Dangling[0].Holder.Program != "lemonade" || o.Dangling[0].Reference != "acme/Tiny-GGUF:Q3_K_M" ||
-		o.Dangling[0].Basis.Key != "user.Tiny-GGUF-Q3_K_M" || o.Dangling[0].Basis.Role != "main" {
+	fixture.Equal(t, "q4 bases", fixture.Bases(q4), []string{"huggingface models--acme--Tiny-GGUF/refs/main|main|"})
+	if len(o.Dangling) != 0 {
 		t.Fatalf("dangling %+v", o.Dangling)
 	}
 
@@ -136,13 +121,6 @@ func TestSnapshotsRefsAndLemonade(t *testing.T) {
 			}
 		}
 	}
-}
-
-func TestLemonadeExtraModelsDir(t *testing.T) {
-	home := fixture.Home(t, "hf")
-	o := fixture.Observe(t, huggingface.New(), fixture.Env(home, nil), "lemonade-extra")
-	m := fixture.MustManifest(t, o, "lemonade", "local-model.gguf")
-	fixture.Equal(t, "holders", fixture.Holders(m), []string{"lemonade"})
 }
 
 // An artifact in the cache publishes a model descriptor: the family and the
@@ -191,7 +169,7 @@ func TestMalformedIndexes(t *testing.T) {
 		}
 		kinds = append(kinds, filepath.Base(e.Locator))
 	}
-	fixture.Equal(t, "malformed indexes", sorted(kinds), []string{".lemonade_registry.json", "config.json", "main", "user_models.json"})
+	fixture.Equal(t, "malformed indexes", sorted(kinds), []string{"main"})
 	bad := fixture.MustManifest(t, o, "hf", "acme/Bad-GGUF:Bad-Q4_K_M.gguf")
 	fixture.Equal(t, "holders", fixture.Holders(bad), []string{"huggingface"})
 }
@@ -334,6 +312,51 @@ func TestNoBlobsDirectory(t *testing.T) {
 	fixture.Equal(t, "holders", fixture.Holders(m), []string{"huggingface"})
 	if e := m.Manifest.Entries[0]; e.Digest != "" || e.Evidence != content.EvidenceNone || e.Size != 4096 {
 		t.Fatalf("bare weights entry %+v, want the manifest complete with an empty digest", e)
+	}
+}
+
+// The same bare layout with the inventory owner's digest record (LS-13): a
+// listing hashes nothing; a request for the file (Verify on its manifest)
+// hashes it once, in the background; later listings show its SHA-256 on the
+// object and the entry while the manifest keeps its id and name addressing.
+func TestMovedBlobIsHashedOnRequest(t *testing.T) {
+	home := t.TempDir()
+	repo := filepath.Join(home, ".cache", "huggingface", "hub", "models--acme--Bare-GGUF")
+	rev := fixture.Label("bare-rev", 40)
+	body := strings.Repeat("w", 4096)
+	mustWrite(t, filepath.Join(repo, "refs", "main"), rev)
+	snap := filepath.Join(repo, "snapshots", rev)
+	file := filepath.Join(snap, "Bare-Q4_K_M.gguf")
+	mustWrite(t, file, body)
+	mustWrite(t, filepath.Join(snap, "config.json"), "{}")
+	env := fixture.Env(home, nil)
+	env.Digests = source.NewDigests("")
+	locator := "models--acme--Bare-GGUF/snapshots/" + rev + "/Bare-Q4_K_M.gguf"
+	o := fixture.Observe(t, huggingface.New(), env, "huggingface")
+	before := fixture.MustManifest(t, o, "hf", "acme/Bare-GGUF:Bare-Q4_K_M.gguf").Manifest
+	if w, _ := fixture.Object(o, locator); w.Digest != "" || env.Digests.Wait() {
+		t.Fatalf("a listing hashed %+v", w)
+	}
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.Digests.Request(file, info.Size(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	env.Digests.Wait()
+	sum := sha256.Sum256([]byte(body))
+	want := "sha256:" + hex.EncodeToString(sum[:])
+	o = fixture.Observe(t, huggingface.New(), env, "huggingface")
+	if w, _ := fixture.Object(o, locator); w.Digest != want || w.Evidence != content.EvidenceHashed {
+		t.Fatalf("hashed weights object %+v, want %s", w, want)
+	}
+	after := fixture.MustManifest(t, o, "hf", "acme/Bare-GGUF:Bare-Q4_K_M.gguf").Manifest
+	if after.ID != before.ID || after.Addressing != content.AddressingName || after.Entries[0].Digest != want {
+		t.Fatalf("manifest after the hash %+v, before %s", after, before.ID)
+	}
+	if env.Digests.Wait() {
+		t.Fatal("a later listing hashed the file again")
 	}
 }
 

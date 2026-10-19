@@ -5,7 +5,7 @@ through the runtime's `abstraction.storage/inventory@1`.*
 
 This provider lists the model files that Ollama, LM Studio, the Hugging Face
 cache and other programs already hold on one machine. The full list is Ollama,
-Hugging Face's hub cache, LM Studio, ComfyUI, FastFlowLM, Jan, Stability
+Hugging Face's hub cache, Lemonade, LM Studio, ComfyUI, FastFlowLM, Jan, Stability
 Matrix, Pinokio, SwarmUI, operator-named directories and ASUS's AI model
 folders (MuseTree's among them). For each it reports what the store holds and
 which program's own index says depends on it. It reads
@@ -41,6 +41,10 @@ diagnostic command and its own tests.
 ## Layout
 
 - **`go/adapters/`** — one package per store: `ollama`, `huggingface`,
+  `lemonade` (the Hugging Face cache Lemonade shares, where its
+  `.lemonade_registry.json` and `user_models.json` selections become holds,
+  a `models_dir` of its own, its `extra_models_dir`, and ModelScope
+  repositories it downloads into the cache as `modelscope--models--<org>--<repo>`),
   `lmstudio`, `comfyui`, `fastflowlm`, `jan`, `stabilitymatrix`, `pinokio`,
   `swarmui`, `extra` (operator-named directories from configuration and
   `ABSTRACTION_MODEL_ROOTS`), `asusai` (`%ProgramData%\ASUS\AICreator`,
@@ -50,9 +54,10 @@ diagnostic command and its own tests.
   directory tree is their only index (LM Studio, ComfyUI, Stability Matrix,
   Pinokio's drive, SwarmUI, Lemonade's extra models directory and operator
   roots). Each adapter's package doc names exactly what it reads — for
-  example `huggingface.go`: "the Hugging Face hub cache and the two Lemonade
-  indexes that name content in it," with the cache and index layout spelled
-  out above the code. `go/adapters/tree/tree.go` and `go/adapters/jan/jan.go`
+  example `huggingface.go`: "the Hugging Face hub cache, and exports its
+  repository reader for programs that keep their own indexes over that
+  layout (the lemonade adapter)," with the cache layout spelled out above the
+  code. `go/adapters/tree/tree.go` and `go/adapters/jan/jan.go`
   apply `source.IsWeightFile` ([CONTRACT.md](CONTRACT.md) LS-1, LS-2); the
   Hugging Face adapter passes `.bin` to `source.IsWeights` as an extra
   extension directly, skipping the sibling-manifest and header checks the
@@ -84,8 +89,8 @@ diagnostic command and its own tests.
 - **`go/snapshot/`** — `Take` runs every adapter over one `Env` and composes
   their observations into one `Result`: the contract records
   (`content.SourceDescription`, `content.SourcePage`) plus per-store
-  `Summary` totals, in report order `ollama, huggingface, lmstudio, comfyui,
-  fastflowlm, jan, stabilitymatrix, pinokio, swarmui, extra, asusai`
+  `Summary` totals, in report order `ollama, huggingface, lemonade, lmstudio,
+  comfyui, fastflowlm, jan, stabilitymatrix, pinokio, swarmui, extra, asusai`
   ([`go/snapshot/snapshot.go`](go/snapshot/snapshot.go)).
 - **`go/internal/`** — `fixture`, a synthetic machine used only by this
   module's own tests.
@@ -107,13 +112,21 @@ inventoryd snapshot --json [--config FILE] [--home DIR]
 inventoryd help
 ```
 
+`--endpoint` short names use `[a-z0-9-]+` and resolve through the current
+account's bootstrap namespace. Absolute endpoint paths and full Windows named
+pipes are passed verbatim, including runtime-assigned provider paths. Dots,
+underscores, uppercase letters and spaces formerly passed through the CLI's
+unrestricted short-name interpolation; they now require an explicit path.
+This CLI shortcut restriction does not change registered provider-name grammar.
+
+
 `serve` answers `Describe`, `Snapshot`, `Observe` and `Verify` on the named
 local endpoint until interrupted; `Remove` always returns `unsupported`
 because this provider lists no remove capability
 ([`go/service/source.go`](go/service/source.go)). Every call is
 rechecked against the connecting peer: a caller of another account reads
 `forbidden`, an identity the transport could not establish is the error code
-`caller_unavailable`, and a caller below the platform's Program proof is
+`caller_unavailable`, and a caller below the platform's [Program](https://openabstractions.github.io/reference.html#concept-identity.listener-program-need) proof is
 `identity_required` ([`go/service/host.go`](go/service/host.go)).
 `--config FILE` (or `$INVENTORYD_CONFIG`) names an optional JSON file for
 stores with no fixed location — `comfyui`, `swarmui`, `stability_matrix`,
@@ -198,8 +211,8 @@ reads with it what the provider sees without standing up a listener.
 `abstraction-identity`'s `go/privatedir` (identity ID-D1, which keeps
 LS-12's digest record private to this account) and `go/trustedpath`
 (ID-D2, LS-12's owner and access check), `golang.org/x/sys` (file identity, delete-sharing reads and the
-owner check on Windows) and `gopkg.in/yaml.v3` (read by the ComfyUI
-adapter's `extra_model_paths.yaml`). The recorded evidence
+owner check on Windows). The ComfyUI and Jan index files are read by the
+in-house `internal/indexyaml`. The recorded evidence
 (`research/feedback-archive-2026-09-24/content-definitions-and-inventoryd.md` in the parent project) covers
 Windows tests, `go vet` for `GOOS=linux` and `GOOS=darwin`, and a mutation check
 of all ten adapters. `inventoryd serve` as a standalone process, and the

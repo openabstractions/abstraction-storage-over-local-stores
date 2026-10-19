@@ -91,7 +91,10 @@ type Adapter interface {
 	// Program is the adapter's name and the holder name its own index proves.
 	Program() string
 	// Discover applies the program's discovery rules. It reads configuration
-	// files and lists nothing inside a store.
+	// files and, where the program's own index inside a store names content
+	// (Jan's model.yml, Lemonade's selections in a shared cache), that index,
+	// to turn what it names into claims. It reads no tensor, hashes nothing,
+	// and writes, moves or deletes nothing.
 	Discover(env Env) Discovery
 	// Observe reads one store: directory entries by lstat, the program's own
 	// index files, and the key-value header of a GGUF weight file, which is

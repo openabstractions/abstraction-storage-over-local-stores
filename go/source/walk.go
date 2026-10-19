@@ -82,7 +82,7 @@ func slashRel(rel string) string {
 // Stamp formats a modification or observation time in the contract's
 // timestamp write grammar: UTC, exactly six fractional digits.
 func Stamp(t time.Time) string {
-	return t.UTC().Format("2006-01-02T15:04:05.000000Z")
+	return content.FormatTimestamp(t)
 }
 
 var partialSuffixes = []string{".part", ".partial", ".incomplete", ".tmp", ".download", ".crdownload", ".downloading"}

@@ -1,6 +1,7 @@
 package comfyui_test
 
 import (
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -38,6 +39,29 @@ func TestDiscoveryReadsExtraModelPaths(t *testing.T) {
 		"a111.loras models/LyCORIS",
 		"a111.vae models/VAE",
 	})
+}
+
+// TestSectionErrors reports a section that is not a mapping and still reads
+// the other sections. A plain scalar such as 123 is read as its text: a
+// folder of that name relative to base_path is held rather than reported,
+// which errs toward keeping content.
+func TestSectionErrors(t *testing.T) {
+	home := fixture.Home(t, "comfyui")
+	yml := filepath.Join(home, filepath.FromSlash(amd), "extra_model_paths.yaml")
+	if err := os.WriteFile(yml, []byte("a111: x\nb:\n  checkpoints: m\n  vae: 123\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := comfyui.New().Discover(fixture.Env(home, nil))
+	l := fixture.Location(t, d, "comfyui")
+	if len(l.Errors) != 1 || l.Errors[0].Kind != source.ErrorMalformedIndex || !strings.Contains(l.Errors[0].Detail, "a111") {
+		t.Fatalf("errors %+v", l.Errors)
+	}
+	var got []string
+	for _, c := range d.Claims {
+		got = append(got, c.Basis.Key+" "+filepath.Base(c.Path))
+	}
+	sort.Strings(got)
+	fixture.Equal(t, "claims", got, []string{"b.checkpoints m", "b.vae 123"})
 }
 
 func TestConfiguredInstall(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -20,20 +21,32 @@ type SetupInventoryRoot struct {
 	Store           string
 	Path            string
 	ExpectedFileKey string
+	// Files are the catalogue files a reserved Setup store holds, with the
+	// digests Setup verified when it staged them (ExtraRoot.Files).
+	Files []PinnedFile
+	// Models are the catalogue's models by the files they are made of
+	// (ExtraRoot.Models).
+	Models []PinnedModel
 }
+
+// SetupPictureStore is the reserved store of OA's own picture model folder,
+// where Setup stages every picture model it places.
+const SetupPictureStore = "oa-picture"
 
 type setupInventoryConfig struct {
 	ExtraRoots []setupInventoryRootEntry `json:"extra_roots"`
 }
 
 type setupInventoryRootEntry struct {
-	Store           string `json:"store"`
-	Path            string `json:"path"`
-	ExpectedFileKey string `json:"expected_file_key"`
+	Store           string        `json:"store"`
+	Path            string        `json:"path"`
+	ExpectedFileKey string        `json:"expected_file_key"`
+	Files           []PinnedFile  `json:"files,omitempty"`
+	Models          []PinnedModel `json:"models,omitempty"`
 }
 
-// NewSetupInventoryRoot accepts only the fixed catalogue store or the
-// identity-derived ModelHost chat-store namespace. It resolves the selected
+// NewSetupInventoryRoot accepts only the fixed catalogue store, the fixed
+// picture store or the identity-derived ModelHost chat-store namespace. It resolves the selected
 // directory and records its filesystem identity for later validation.
 func NewSetupInventoryRoot(path, store string) (SetupInventoryRoot, error) {
 	if !setupInventoryStore(store) || strings.TrimSpace(path) == "" || !filepath.IsAbs(path) {
@@ -74,6 +87,12 @@ func SetupInventoryRootConfig(root SetupInventoryRoot) ([]byte, error) {
 	if !setupInventoryStore(root.Store) || root.Path == "" || !filepath.IsAbs(root.Path) || root.ExpectedFileKey == "" {
 		return nil, errors.New("invalid Setup inventory root")
 	}
+	if err := validPinnedFiles(root.Files); err != nil {
+		return nil, err
+	}
+	if err := validPinnedModels(root.Files, root.Models); err != nil {
+		return nil, err
+	}
 	current, err := NewSetupInventoryRoot(root.Path, root.Store)
 	if err != nil {
 		if strings.HasPrefix(root.Store, "oa-chat-") && strings.Contains(err.Error(), "identity-derived store") {
@@ -84,7 +103,7 @@ func SetupInventoryRootConfig(root SetupInventoryRoot) ([]byte, error) {
 	if current.Path != root.Path || current.ExpectedFileKey != root.ExpectedFileKey {
 		return nil, errors.New("the selected folder identity changed; select it again")
 	}
-	config := setupInventoryConfig{ExtraRoots: []setupInventoryRootEntry{{Store: root.Store, Path: root.Path, ExpectedFileKey: root.ExpectedFileKey}}}
+	config := setupInventoryConfig{ExtraRoots: []setupInventoryRootEntry{{Store: root.Store, Path: root.Path, ExpectedFileKey: root.ExpectedFileKey, Files: root.Files, Models: root.Models}}}
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode inventory setup: %w", err)
@@ -92,8 +111,43 @@ func SetupInventoryRootConfig(root SetupInventoryRoot) ([]byte, error) {
 	return append(data, '\n'), nil
 }
 
+// validPinnedFiles refuses a pinned file that is not one clean relative
+// path below the root with a size and a lowercase SHA-256, and a path named
+// twice.
+func validPinnedFiles(files []PinnedFile) error {
+	seen := map[string]bool{}
+	for _, f := range files {
+		if f.Path == "" || path.IsAbs(f.Path) || path.Clean(f.Path) != f.Path || f.Path == ".." || strings.HasPrefix(f.Path, "../") ||
+			strings.ContainsAny(f.Path, `\:`) || seen[f.Path] || f.Size < 1 || len(f.SHA256) != 64 ||
+			strings.Trim(f.SHA256, "0123456789abcdef") != "" {
+			return fmt.Errorf("the Setup store's pinned file %q is not one clean relative path with a size and SHA-256", f.Path)
+		}
+		seen[f.Path] = true
+	}
+	return nil
+}
+
+// validPinnedModels refuses a model with no name, a name given twice, no
+// files or a file the catalogue does not pin.
+func validPinnedModels(files []PinnedFile, models []PinnedModel) error {
+	pinned := NewPinned(files, nil)
+	seen := map[string]bool{}
+	for _, m := range models {
+		if strings.TrimSpace(m.Name) == "" || len(m.Name) > 256 || seen[m.Name] || len(m.Files) == 0 {
+			return fmt.Errorf("the Setup store's model %q is not one named model with files", m.Name)
+		}
+		seen[m.Name] = true
+		for _, p := range m.Files {
+			if _, ok := pinned.Files[p]; !ok {
+				return fmt.Errorf("the Setup store's model %s names %q, which it does not pin", m.Name, p)
+			}
+		}
+	}
+	return nil
+}
+
 func setupInventoryStore(store string) bool {
-	if store == "oa-catalogue" {
+	if store == "oa-catalogue" || store == SetupPictureStore {
 		return true
 	}
 	if !strings.HasPrefix(store, "oa-chat-") {

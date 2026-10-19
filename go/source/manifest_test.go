@@ -15,6 +15,29 @@ func noneEntry(locator string, size int64) content.Entry {
 	return FileEntry(RoleWeights, locator, size)
 }
 
+// What only a GGUF header says leaves a manifest's id as its names and
+// digests made it, so reading headers renames no manifest a host declared.
+func TestHeaderKeysLeaveTheIDAsItWas(t *testing.T) {
+	names := []content.Name{{Scheme: "hf", Name: "test/Tiny-GGUF:Tiny-135M-Instruct-Q4_K_M.gguf"}}
+	entries := []content.Entry{noneEntry("models--test--Tiny-GGUF/snapshots/r/Tiny-135M-Instruct-Q4_K_M.gguf", 1<<20)}
+	named := map[string]string{"family": "tiny-135m", "quant": "q4_k_m", "format": "gguf", "source": "huggingface"}
+	headed := map[string]string{"family": "tiny-135m", "quant": "q4_k_m", "format": "gguf", "source": "huggingface",
+		"architecture": "llama", "size_label": "135M", "finetune": "Instruct", "context_length": "8192", "base": "test/Tiny"}
+	a := NewManifest("huggingface", KindModel, entries, names, named)
+	b := NewManifest("huggingface", KindModel, entries, names, headed)
+	if a.ID != b.ID {
+		t.Fatalf("header keys renamed the manifest: %s != %s", a.ID, b.ID)
+	}
+	if b.Descriptor["context_length"] != "8192" {
+		t.Fatalf("the descriptor lost the header's context: %v", b.Descriptor)
+	}
+	component := map[string]string{"family": "tiny-135m-mmproj", "format": "gguf", "role": RoleProjector, "base": "tiny-135m"}
+	withoutBase := map[string]string{"family": "tiny-135m-mmproj", "format": "gguf", "role": RoleProjector}
+	if NewManifest("huggingface", KindModel, entries, names, component).ID == NewManifest("huggingface", KindModel, entries, names, withoutBase).ID {
+		t.Fatal("a component's base, read from its own name, no longer identifies it")
+	}
+}
+
 // A digest-less manifest is name-addressed over names[0]: its id follows what
 // the program calls it, never where the file lies.
 func TestNameAddressedIDIgnoresLocatorAndStore(t *testing.T) {

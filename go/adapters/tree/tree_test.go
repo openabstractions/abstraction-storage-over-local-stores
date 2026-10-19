@@ -1,13 +1,17 @@
 package tree_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/tree"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/internal/fixture"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/source"
+	content "github.com/openabstractions/abstraction-storage/go/abstraction/storage/content"
 )
 
 // A bare ".bin" is ambiguous: PyTorch's own checkpoint format uses it, and so
@@ -154,5 +158,62 @@ func TestComponentDescriptorNamesItsRoleAndBase(t *testing.T) {
 	ckpt := fixture.MustManifest(t, o, "test", "checkpoints/wan2.2.safetensors")
 	if ckpt.Manifest.Descriptor["role"] != "" {
 		t.Fatalf("checkpoint descriptor carries a role it should not: %v", ckpt.Manifest.Descriptor)
+	}
+}
+
+// LS-13: a tree names no file by content (an app's model folder, an
+// operator-named root). A listing hashes nothing; a request hashes one
+// weights file once, and listings then show its SHA-256 on the object and
+// the entry while the manifest keeps its id and name addressing. A changed
+// stamp drops the digest and keeps the id. A pickle is never hashed.
+func TestTreeWeightsAreHashedOnRequest(t *testing.T) {
+	root := t.TempDir()
+	body := []byte("tree weights")
+	file := filepath.Join(root, "pub", "model", "model-Q4_K_M.gguf")
+	for path, b := range map[string][]byte{file: body, filepath.Join(root, "old", "upscale.pth"): []byte("pickle")} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env := fixture.Env(root, nil)
+	env.Digests = source.NewDigests("")
+	loc := source.NewStore("test", "test", root, "test")
+	o := tree.Observe(loc, env, tree.Options{Scheme: "test"})
+	before := fixture.MustManifest(t, o, "test", "pub/model/model-Q4_K_M.gguf").Manifest
+	if w, _ := fixture.Object(o, "pub/model/model-Q4_K_M.gguf"); w.Digest != "" || env.Digests.Wait() {
+		t.Fatalf("a listing hashed %+v", w)
+	}
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.Digests.Request(file, info.Size(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	env.Digests.Wait()
+	o = tree.Observe(loc, env, tree.Options{Scheme: "test"})
+	sum := sha256.Sum256(body)
+	want := "sha256:" + hex.EncodeToString(sum[:])
+	if w, _ := fixture.Object(o, "pub/model/model-Q4_K_M.gguf"); w.Digest != want || w.Evidence != content.EvidenceHashed {
+		t.Fatalf("hashed object %+v, want %s", w, want)
+	}
+	after := fixture.MustManifest(t, o, "test", "pub/model/model-Q4_K_M.gguf").Manifest
+	if after.ID != before.ID || after.Addressing != content.AddressingName || after.Entries[0].Digest != want {
+		t.Fatalf("manifest after the hash %+v, before %s", after, before.ID)
+	}
+	if p, _ := fixture.Object(o, "old/upscale.pth"); p.Digest != "" {
+		t.Fatalf("a pickle was hashed: %+v", p)
+	}
+	later := info.ModTime().Add(time.Hour)
+	if err := os.Chtimes(file, later, later); err != nil {
+		t.Fatal(err)
+	}
+	o = tree.Observe(loc, env, tree.Options{Scheme: "test"})
+	changed := fixture.MustManifest(t, o, "test", "pub/model/model-Q4_K_M.gguf").Manifest
+	if changed.ID != before.ID || changed.Entries[0].Digest != "" || env.Digests.Wait() {
+		t.Fatalf("after a stamp change %+v", changed)
 	}
 }

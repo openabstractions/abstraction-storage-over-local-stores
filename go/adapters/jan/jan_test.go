@@ -38,6 +38,28 @@ func TestEmptyAndMissing(t *testing.T) {
 	fixture.EmptyAndMissing(t, jan.New(), "jan", models)
 }
 
+// TestCurrentModelYAML reads a model.yml as Jan writes it today (copied from
+// a live install on 2026-10-19), with flow values such as template_kwargs: [].
+func TestCurrentModelYAML(t *testing.T) {
+	home := fixture.Home(t, "jan-current")
+	o := fixture.Observe(t, jan.New(), fixture.Env(home, nil), "jan")
+	fixture.Equal(t, "errors", fixture.ErrorKinds(o), []string(nil))
+	m := fixture.MustManifest(t, o, "jan", "sentence-transformer-mini")
+	fixture.Equal(t, "roles", fixture.Roles(m), []string{"weights"})
+	fixture.Equal(t, "holders", fixture.Holders(m), []string{"jan"})
+}
+
+// TestModelYAMLNotString reports a model.yml whose name is not a scalar.
+func TestModelYAMLNotString(t *testing.T) {
+	home := fixture.Home(t, "jan-current")
+	yml := filepath.Join(home, "AppData", "Roaming", "Jan", "data", "llamacpp", "models", "sentence-transformer-mini", "model.yml")
+	if err := os.WriteFile(yml, []byte("model_path: m.gguf\nname:\n  - a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o := fixture.Observe(t, jan.New(), fixture.Env(home, nil), "jan")
+	fixture.Equal(t, "errors", fixture.ErrorKinds(o), []string{"malformed_index sentence-transformer-mini/model.yml"})
+}
+
 func TestModelYAML(t *testing.T) {
 	home := fixture.Home(t, "jan")
 	o := fixture.Observe(t, jan.New(), fixture.Env(home, nil), "jan")

@@ -4,6 +4,7 @@ comfyui-extra:a111	comfyui	{{ROOT}}/stable-diffusion-webui	claim by comfyui: {{R
 fastflowlm	fastflowlm	{{ROOT}}/.flm/models	default location ~/.flm/models	true	local		
 huggingface	huggingface	{{ROOT}}/.cache/huggingface/hub	default location ~/.cache/huggingface/hub	true	local		
 jan	jan	{{ROOT}}/AppData/Roaming/Jan/data/llamacpp/models	default data folder Jan/data	true	local		malformed_index broken/model.yml
+lemonade-cache	lemonade	{{ROOT}}/.cache/huggingface/hub	the Hugging Face cache by default location ~/.cache/huggingface/hub	true	local		
 lemonade-extra	lemonade	{{ROOT}}/LemonadeExtra	lemonade {{ROOT}}/.cache/lemonade/config.json extra_models_dir	true	local		
 lmstudio	lmstudio	{{ROOT}}/LMStudioModels	home from ~/.lmstudio-home-pointer, settings.json downloadsFolder	true	local		
 nas		{{ROOT}}/NAS/models	operator configuration extra_roots	true	local		

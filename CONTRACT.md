@@ -3,8 +3,8 @@
 Binds: none (records only)
 
 This is the reading of `abstraction.storage/inventory-source@1`
-(`abstraction-storage/content.thrift`), the service eleven local model stores —
-Ollama, Hugging Face's hub cache, LM Studio, ComfyUI, FastFlowLM, Jan,
+(`abstraction-storage/content.thrift`), the service twelve local model stores —
+Ollama, Hugging Face's hub cache, Lemonade, LM Studio, ComfyUI, FastFlowLM, Jan,
 Stability Matrix, Pinokio, SwarmUI, operator-named directories and ASUS's
 AI model folders — implement on one machine. It states what counts as a weight file, how a digest is
 found, and what this reader promises never to do to a store it reads.
@@ -12,7 +12,9 @@ found, and what this reader promises never to do to a store it reads.
 
 ## Reading this page
 
-The rule ids below, `LS-1` through `LS-12`, are what tests and refusals cite.
+The conventions every OA contract carries are stated once in [CONVENTIONS.md](https://github.com/openabstractions/abstractions/blob/main/idl/CONVENTIONS.md); a rule here that applies one cites its `CONV-` id.
+
+The rule ids below, `LS-1` through `LS-13`, are what tests and refusals cite.
 This page states one flow — classification, then digests, then containers,
 then this reader's own promise — and its ids carry no topic letter. [HISTORY.md](HISTORY.md)
 holds why the digest rules take this shape and what was measured.
@@ -58,7 +60,17 @@ D90), so this page carries no prose-to-wire table.
   `blobs/<sha256 or git-sha1 hex>`, the reader MUST read the linked file's
   digest from that blob's filename (`filepath.Base` on the link target), and
   the entry's `digest` (`Entry.digest`, `content.thrift:145`) MUST carry it:
-  it names content, never a computed hash of the adapter's own.
+  it names content, never a computed hash of the adapter's own. The same
+  rule covers a digest the store's own index states for one file (Ollama's
+  manifest layer digest, Jan's `model.yml` `model_sha256` for the file
+  `model_path` names): the entry's `digest` MUST carry `sha256:<hex>` from
+  that index with evidence `named`, and the reader computes nothing. An
+  index-stated digest that is not 64 hex is a `malformed_index` error. The
+  entry stays listed and held by its program, name-addressed with an empty
+  digest and evidence none; it loses only its digest. An Ollama v0.40 name
+  under `manifests-v2/` stands for a blob of its own: where the name is a
+  link, the reader MUST carry the linked blob's name in an `ollama/manifest`
+  entry of every manifest read through that name.
 - **[LS-4] Unlinked file matched by size.** Without the symlink privilege —
   Windows accounts without Developer Mode — huggingface_hub itself copies the
   blob's bytes into the snapshot instead of linking it, moving a new blob in
@@ -67,7 +79,12 @@ D90), so this page carries no prose-to-wire table.
   The reader MUST match an unlinked snapshot file to the one blob of the same
   size in its repository and MUST carry that blob's digest and evidence as
   the snapshot file's own. A size collision between two blobs MUST resolve
-  through the bounded read LS-6 allows, never a whole-file hash.
+  through the bounded read LS-6 allows, never a whole-file hash. Ollama
+  writes a `manifests-v2/` name on Windows as a regular-file copy of its
+  blob; the reader MUST match that copy to the one present blob of the same
+  size and bytes that no manifest entry names except an `ollama/manifest`
+  entry, comparing at
+  most 1 MiB and hashing nothing.
 - **[LS-5] No blob means name addressing.** A repository with no `blobs/`
   directory at all leaves nothing for LS-4 to match against: this is
   huggingface_hub's own no-symlink fallback on the common case, a Windows
@@ -131,6 +148,24 @@ the design; `go/container` implements these rules.
 
 ## Pinned public releases
 
+- **[LS-13] A weights file its store names by no SHA-256 is hashed only on
+  request.** A listing (`Snapshot`, `Observe`) MUST NOT hash it. `Verify`
+  on one model manifest's own id asks for that manifest's weights entries
+  that carry no digest: each file of the entry's size on a local volume is
+  hashed once per change of its held stamp, size and time, in the
+  background, at background IO priority where the platform has one, through
+  the digest record LS-12 keeps. A file on a remote or device volume MUST
+  NOT be read. A pickle, a partial download and a zip member MUST NOT be
+  hashed. Nothing a caller did not name is hashed. Afterwards a listing
+  shows the recorded `sha256:` digest, evidence `hashed`, on the entry and
+  the object while the file's stamp, size and time are unchanged; the
+  manifest MUST keep the id and name addressing it had before the hash,
+  because hosts and lends bind it by id. A consumer that wants one pinned
+  file lists the same-size candidates, asks `Verify` (storage inventory
+  `Holders`) on each, and then finds it by digest (`Find`): Setup adopts a
+  pinned model already on the computer this way instead of downloading it
+  (ADD-DL, 2026-10-31).
+
 - **[LS-12] A pinned-release store lists only verified public files.**
   ASUS's AI model folders under `%ProgramData%\ASUS` — `AICreator` (MuseTree's
   models), `LLMServer\models` and `WhisperRecorder\models`, one store each —
@@ -188,8 +223,9 @@ the design; `go/container` implements these rules.
   files' bytes in bounded chunks to tell them apart, never hashing a whole
   file and never opening a tensor to read it; LS-10's explicit
   `containers --hash` call, which never runs inside `Snapshot`, `Observe`
-  or `Verify`; and LS-12's once-per-change hash of a pinned candidate, the
-  only whole-file hash `Snapshot` and `Observe` take.
+  or `Verify`; LS-12's once-per-change hash of a pinned candidate, the
+  only whole-file hash `Snapshot` and `Observe` take; and LS-13's
+  on-request hash, which runs only after `Verify` names a manifest.
 - **[LS-7] Writes, moves and deletes nothing.** The reader MUST NOT write,
   move or delete any file in any store it reads. `Remove` on
   `InventorySource` MUST answer `unsupported` for this provider. LS-12's
@@ -204,13 +240,18 @@ the design; `go/container` implements these rules.
 | counted as an object, weight file | LS-1, LS-2 |
 | pickle weight (`.pth`, `.pt`, `.ckpt`, `.bin` neither GGUF nor ggml): object, no manifest | LS-1 |
 | excluded from the inventory | LS-2 |
-| `digest` carries the blob's name, evidence hashed by the link | LS-3 |
-| `digest` carries the matched blob's name, evidence hashed by size | LS-4 |
+| `digest` carries the blob's name, evidence `named` | LS-3 |
+| `digest` carries the index-stated `model_sha256`, evidence `named` | LS-3 |
+| index-stated digest not 64 hex: `malformed_index`, entry kept and held, name-addressed | LS-3 |
+| Ollama `manifests-v2/` name: `ollama/manifest` entry carries its blob, by link or by size and bytes | LS-3, LS-4 |
+| `digest` carries the matched blob's name, evidence `sized` (the wire carries `named` until storage adds the `sized` grade) | LS-4 |
 | `digest` empty, evidence none, name-addressed from `names[0]` | LS-4, LS-5 |
 | container member: object with a manifest, locator `zip!/member` | LS-8 |
 | pickle or compressed nested zip member: object, no manifest | LS-8, LS-9 |
 | member digest from `containers --hash`, or none when the allowance is short | LS-10 |
 | malformed zip: store error `other` naming the zip | LS-11 |
+| weights file its store names by no SHA-256, not asked for or hash pending: object and manifest, no digest | LS-13 |
+| weights file its store names by no SHA-256, hashed on request: object and entry `sha256:` digest, evidence hashed; the manifest keeps its id and name addressing | LS-13 |
 | ASUS folder candidate, trusted, in the pin's format, hash pending: object, no digest, no manifest | LS-12 |
 | ASUS folder candidate owned or changeable by another principal: store error `other`, never opened | LS-12 |
 | ASUS folder file matching a pin by path, size and SHA-256: object and manifest, `sha256:` digest, evidence hashed, named by path and by release | LS-12 |

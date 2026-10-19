@@ -427,9 +427,17 @@ func TestHashOnceAndReverify(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Same file, same size, same time, different bytes (an in-place write,
-	// which the owner rule keeps from other accounts): the record answers,
-	// so the file is not read.
+	if got := fixture.Locators(settled(t, env, "asus-aicreator")); len(got) != 2 {
+		t.Fatalf("unchanged file lost its record: %v", got)
+	}
+	restarted := env
+	restarted.Digests = source.NewDigests(record)
+	if got := fixture.Locators(settled(t, restarted, "asus-aicreator")); len(got) != 2 {
+		t.Fatalf("restart lost the record: %v", got)
+	}
+
+	// Restoring mtime after an in-place write preserves neither the held-file
+	// change stamp nor the pinned bytes. The v3 digest owner re-verifies it.
 	tampered := strings.Replace(files[transformerRel], "public", "PUBLIC", 1)
 	if err := os.WriteFile(path, []byte(tampered), 0o644); err != nil {
 		t.Fatal(err)
@@ -437,14 +445,9 @@ func TestHashOnceAndReverify(t *testing.T) {
 	if err := os.Chtimes(path, st.ModTime(), st.ModTime()); err != nil {
 		t.Fatal(err)
 	}
-	if got := fixture.Locators(settled(t, env, "asus-aicreator")); len(got) != 2 {
-		t.Fatalf("unchanged stamp re-read the file: %v", got)
-	}
-	restarted := env
+	fixture.Equal(t, "listed after same-mtime write", fixture.Locators(settled(t, env, "asus-aicreator")), []string{within(turboRel)})
 	restarted.Digests = source.NewDigests(record)
-	if got := fixture.Locators(settled(t, restarted, "asus-aicreator")); len(got) != 2 {
-		t.Fatalf("restart lost the record: %v", got)
-	}
+	fixture.Equal(t, "same-mtime write after restart", fixture.Locators(settled(t, restarted, "asus-aicreator")), []string{within(turboRel)})
 
 	// A same-size file renamed over it with the old time is another file:
 	// it is hashed again and dropped.

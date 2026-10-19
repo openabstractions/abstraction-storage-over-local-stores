@@ -1,20 +1,25 @@
-// Package jan reads Jan's llama.cpp model store: <data>/llamacpp/models/<id>/
-// with a model.yml naming model_path and, for vision models, mmproj_path.
+// Package jan reads Jan's model stores: <data>/llamacpp/models and
+// <data>/mlx/models, each holding model.yml files at any depth (Jan v0.8.6
+// writes llamacpp/models/<org>/<repo>/model.yml) naming model_path, for
+// vision models mmproj_path, and model_sha256, Jan's own digest of the
+// weights file.
 package jan
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	digestfmt "github.com/openabstractions/abstraction-storage/go/digest"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/tree"
+	"github.com/openabstractions/abstraction-storage-over-local-stores/go/internal/indexyaml"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/source"
 	content "github.com/openabstractions/abstraction-storage/go/abstraction/storage/content"
 )
@@ -62,15 +67,20 @@ func (Adapter) Discover(env source.Env) source.Discovery {
 	loc := source.NewStore("jan", program, filepath.Join(data, "llamacpp", "models"), rule)
 	loc.Errors = errs
 	d.Stores = append(d.Stores, loc)
+	// The MLX store exists on Apple silicon installs only; it is reported
+	// where Jan made it.
+	if mlx := filepath.Join(data, "mlx", "models"); source.IsDir(mlx) {
+		d.Stores = append(d.Stores, source.NewStore("jan-mlx", program, mlx, rule+" mlx/models"))
+	}
 
-	if loc.Present {
-		//unchecked: a missing or unreadable models directory just yields no entries below, the normal "nothing found here" case for optional discovery
-		dirs, _ := os.ReadDir(loc.Locator)
-		for _, dir := range dirs {
-			if !dir.IsDir() {
-				continue
-			}
-			index := filepath.Join(loc.Locator, dir.Name(), "model.yml")
+	for _, s := range d.Stores {
+		if !s.Present {
+			continue
+		}
+		//unchecked: an unreadable directory under the models folder just yields no claims; Observe reports it
+		files, _ := source.Walk(s.Locator)
+		for _, id := range modelDirs(files) {
+			index := filepath.Join(s.Locator, filepath.FromSlash(id), "model.yml")
 			m, err := readModel(index)
 			if err != nil || m == nil {
 				continue
@@ -81,8 +91,8 @@ func (Adapter) Discover(env source.Env) source.Discovery {
 				}
 				abs := resolvePath(data, p.value)
 				// A path identity could not place makes no claim.
-				if _, inside, err := source.Within(loc.Locator, abs); err == nil && !inside {
-					d.Claims = append(d.Claims, source.Claim{Holder: source.Holder{Program: program}, Purpose: source.PurposeInstalled, Path: abs, Store: "jan-external", Basis: content.Basis{Index: index, Key: dir.Name(), Role: p.key}})
+				if _, inside, err := source.Within(s.Locator, abs); err == nil && !inside {
+					d.Claims = append(d.Claims, source.Claim{Holder: source.Holder{Program: program}, Purpose: source.PurposeInstalled, Path: abs, Store: "jan-external", Basis: content.Basis{Index: index, Key: id, Role: p.key}})
 				}
 			}
 		}
@@ -90,10 +100,30 @@ func (Adapter) Discover(env source.Env) source.Discovery {
 	return d
 }
 
+// modelDirs are the directories, relative and slash-separated, that hold a
+// model.yml at any depth, sorted.
+func modelDirs(files []source.File) []string {
+	var ids []string
+	for _, f := range files {
+		if f.Link || path.Base(f.Rel) != "model.yml" {
+			continue
+		}
+		if dir := path.Dir(f.Rel); dir != "." {
+			ids = append(ids, dir)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 type model struct {
-	ModelPath  string `yaml:"model_path"`
-	MmprojPath string `yaml:"mmproj_path"`
-	Name       string `yaml:"name"`
+	ModelPath   string
+	MmprojPath  string
+	Name        string
+	ModelSHA256 string
+	// BadDigest is set when model_sha256 is not 64 hex; the model keeps its
+	// place and has no digest.
+	BadDigest error
 }
 
 func readModel(p string) (*model, error) {
@@ -104,17 +134,54 @@ func readModel(p string) (*model, error) {
 	if err != nil {
 		return nil, err
 	}
-	var m model
-	if err := yaml.Unmarshal(b, &m); err != nil {
+	doc, err := indexyaml.Parse(b)
+	if err != nil {
 		return nil, malformed{err}
+	}
+	if doc.Kind != indexyaml.Map {
+		return nil, malformed{fmt.Errorf("top level is not a mapping")}
+	}
+	var m model
+	for _, f := range []struct {
+		key string
+		dst *string
+	}{{"model_path", &m.ModelPath}, {"mmproj_path", &m.MmprojPath}, {"name", &m.Name}, {"model_sha256", &m.ModelSHA256}} {
+		v := doc.Get(f.key)
+		if v == nil || v.Kind == indexyaml.Null {
+			continue
+		}
+		s, ok := v.String()
+		if !ok {
+			return nil, malformed{fmt.Errorf("%s is not a string", f.key)}
+		}
+		*f.dst = s
 	}
 	if m.ModelPath == "" {
 		return nil, malformed{fmt.Errorf("no model_path")}
+	}
+	if m.ModelSHA256 != "" {
+		// Decoding and re-encoding spells the digest in lowercase hex.
+		raw, err := hex.DecodeString(strings.TrimPrefix(m.ModelSHA256, "sha256:"))
+		if err != nil || len(raw) != 32 {
+			m.BadDigest = fmt.Errorf("model_sha256 %q is not 64 hex", m.ModelSHA256)
+			m.ModelSHA256 = ""
+		} else {
+			m.ModelSHA256 = digestfmt.Hex(raw)
+		}
 	}
 	return &m, nil
 }
 
 type malformed struct{ error }
+
+// wantDigest is the digest a dangling reference expects: model_sha256 for
+// the model file, none for any other.
+func wantDigest(key string, m *model) string {
+	if key == "model_path" {
+		return m.ModelSHA256
+	}
+	return ""
+}
 
 // resolvePath applies Jan's rule: model_path is relative to the data folder
 // unless absolute.
@@ -159,20 +226,9 @@ func (Adapter) Observe(loc content.Store, env source.Env) source.StoreObservatio
 	}
 
 	named := map[string]bool{}
-	dirs := map[string]bool{}
-	for _, f := range files {
-		if dir, rest, ok := strings.Cut(f.Rel, "/"); ok && rest == "model.yml" {
-			dirs[dir] = true
-		}
-	}
-	var ids []string
-	for id := range dirs {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
+	for _, id := range modelDirs(files) {
 		index := id + "/model.yml"
-		m, err := readModel(filepath.Join(loc.Locator, id, "model.yml"))
+		m, err := readModel(filepath.Join(loc.Locator, filepath.FromSlash(id), "model.yml"))
 		if err != nil {
 			var bad malformed
 			if errors.As(err, &bad) {
@@ -181,6 +237,9 @@ func (Adapter) Observe(loc content.Store, env source.Env) source.StoreObservatio
 				o.Fail(source.ErrorUnreadableIndex, index, err)
 			}
 			continue
+		}
+		if m.BadDigest != nil {
+			o.Fail(source.ErrorMalformedIndex, index, m.BadDigest)
 		}
 		var entries []content.Entry
 		pickled := false
@@ -195,17 +254,37 @@ func (Adapter) Observe(loc content.Store, env source.Env) source.StoreObservatio
 			if err != nil || !inside {
 				continue // claimed at discovery
 			}
-			f, ok := objects[rel]
-			if !ok {
-				o.Want(source.Holder{Program: program}, content.Basis{Index: index, Key: id, Role: p.key}, p.value, "", 0, at)
+			rels := []string{rel}
+			_, file := objects[rel]
+			if !file {
+				// An MLX model_path names the model's folder: every weight
+				// file under it is the model's.
+				rels = nil
+				for _, w := range weights {
+					if strings.HasPrefix(w, rel+"/") {
+						rels = append(rels, w)
+					}
+				}
+			}
+			if len(rels) == 0 {
+				o.Want(source.Holder{Program: program}, content.Basis{Index: index, Key: id, Role: p.key}, p.value, wantDigest(p.key, m), 0, at)
 				continue
 			}
-			named[rel] = true
-			if source.IsPickle(filepath.Join(loc.Locator, filepath.FromSlash(rel)), rel) {
-				pickled = true
-				continue
+			for _, rel := range rels {
+				named[rel] = true
+				if source.IsPickle(filepath.Join(loc.Locator, filepath.FromSlash(rel)), rel) {
+					pickled = true
+					continue
+				}
+				e := source.FileEntry(p.role, rel, objects[rel].Size)
+				// model_sha256 is the digest Jan's own index states for the
+				// file model_path names (LS-3, index-stated digest); a
+				// folder-named MLX model has no per-file digest.
+				if p.key == "model_path" && file && m.ModelSHA256 != "" {
+					e.Digest, e.Evidence = m.ModelSHA256, content.EvidenceNamed
+				}
+				entries = append(entries, e)
 			}
-			entries = append(entries, source.FileEntry(p.role, rel, f.Size))
 		}
 		// A model whose file is a pickle is listed and never offered (LS-1).
 		if len(entries) == 0 || pickled {

@@ -41,8 +41,8 @@ func (Adapter) Discover(env source.Env) source.Discovery {
 		if r.Path == "" {
 			continue
 		}
-		store := source.NewStore(name(r.Store), r.Holder, env.Expand(r.Path), "operator configuration extra_roots")
-		if r.ExpectedFileKey != "" {
+		store := localStore(name(r.Store), r.Holder, env.Expand(r.Path), "operator configuration extra_roots")
+		if len(store.Errors) == 0 && r.ExpectedFileKey != "" {
 			key, err := identity.FileKey(store.Locator)
 			if err != nil || key != r.ExpectedFileKey {
 				store.Errors = append(store.Errors, content.StoreError{Kind: source.ErrorUnreadableTree,
@@ -61,10 +61,24 @@ func (Adapter) Discover(env source.Env) source.Discovery {
 			if !named || dir == "" {
 				store, dir = "", entry
 			}
-			d.Stores = append(d.Stores, source.NewStore(name(store), "", env.Expand(dir), "environment ABSTRACTION_MODEL_ROOTS"))
+			d.Stores = append(d.Stores, localStore(name(store), "", env.Expand(dir), "environment ABSTRACTION_MODEL_ROOTS"))
 		}
 	}
 	return d
+}
+
+// Locality is decided before NewStore stats the root or a pinned identity is read.
+func localStore(name, program, root, rule string) content.Store {
+	if err := identity.LocalPath(root); err != nil {
+		return content.Store{Name: name, Program: program, Locator: root, Rule: rule,
+			Placement: content.PlacementLocal, Errors: []content.StoreError{localRootError(root)}}
+	}
+	return source.NewStore(name, program, root, rule)
+}
+
+func localRootError(root string) content.StoreError {
+	return content.StoreError{Kind: content.StoreErrorKindUnreadableConfiguration, Locator: root,
+		Detail: "a local folder is required for an extra root"}
 }
 
 func itoa(i int) string {
@@ -80,6 +94,11 @@ func (Adapter) Observe(loc content.Store, env source.Env) source.StoreObservatio
 	if len(loc.Errors) != 0 {
 		return source.StoreObservation{Store: loc, Objects: []content.Object{}, Manifests: []content.ManifestHolders{}, Dangling: []content.Dangling{}}
 	}
+	if err := identity.LocalPath(loc.Locator); err != nil {
+		loc.Present = false
+		loc.Errors = append(loc.Errors, localRootError(loc.Locator))
+		return source.StoreObservation{Store: loc, Objects: []content.Object{}, Manifests: []content.ManifestHolders{}, Dangling: []content.Dangling{}}
+	}
 	for _, root := range env.Config.ExtraRoots {
 		if root.ExpectedFileKey == "" || env.Expand(root.Path) != loc.Locator {
 			continue
@@ -93,5 +112,5 @@ func (Adapter) Observe(loc content.Store, env source.Env) source.StoreObservatio
 		break
 	}
 	return tree.Observe(loc, env, tree.Options{Scheme: loc.Name, Holder: loc.Program, Purpose: source.PurposeInstalled,
-		Index: "operator configuration", Containers: true})
+		Index: "operator configuration", Containers: true, Pinned: env.PinnedRoot(loc.Locator)})
 }

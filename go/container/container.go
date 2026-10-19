@@ -21,9 +21,9 @@ import (
 	"compress/flate"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
+	digestfmt "github.com/openabstractions/abstraction-storage/go/digest"
 	"hash"
 	"hash/crc32"
 	"io"
@@ -322,7 +322,7 @@ func digest(r io.Reader, size int64) (string, error) {
 	if n != size {
 		return "", fmt.Errorf("read %d bytes of a member of %d", n, size)
 	}
-	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
+	return digestfmt.Hex(h.Sum(nil)), nil
 }
 
 // counted counts the bytes read through it, which is the stream offset.

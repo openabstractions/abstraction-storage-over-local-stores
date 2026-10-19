@@ -1,18 +1,15 @@
-// Package huggingface reads the Hugging Face hub cache and the two Lemonade
-// indexes that name content in it.
+// Package huggingface reads the Hugging Face hub cache, and exports its
+// repository reader for programs that keep their own indexes over that
+// layout (the lemonade adapter).
 //
 // Layout (huggingface_hub, "Manage cache"): <hub>/models--<org>--<repo>/ with
 // refs/<name> holding a commit, snapshots/<commit>/<path> as links into blobs/
 // (or plain files where links are unavailable, as on Windows without Developer
-// Mode and on the owner's machine), and blobs/<etag>[.incomplete]. Lemonade
-// writes .lemonade_registry.json into each repo it uses and keeps
-// user_models.json in its configuration directory; both name
-// "<org>/<repo>:<file or quant>" selections per role.
+// Mode and on the owner's machine), and blobs/<etag>[.incomplete].
 package huggingface
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,7 +21,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/tree"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/source"
 	content "github.com/openabstractions/abstraction-storage/go/abstraction/storage/content"
 
@@ -32,8 +28,7 @@ import (
 )
 
 const (
-	program  = "huggingface"
-	lemonade = "lemonade"
+	program = "huggingface"
 	// ambiguousBinExt is ".bin": ambiguous by name alone elsewhere (see
 	// source.IsWeightFile), but every file this adapter walks sits inside a
 	// repository's snapshots/<rev>/, the Hugging Face cache layout that
@@ -47,16 +42,12 @@ func New() Adapter { return Adapter{} }
 
 func (Adapter) Program() string { return program }
 
-// Discover applies huggingface_hub's own precedence for the cache in use:
+// HubRoot applies huggingface_hub's own precedence for the cache in use:
 // HF_HUB_CACHE, then the legacy HUGGINGFACE_HUB_CACHE, then HF_HOME/hub, then
-// $XDG_CACHE_HOME/huggingface/hub, then ~/.cache/huggingface/hub. A program
-// started with another environment may have used the default, so the default
-// is also reported when it exists and differs. Lemonade's config.json adds its
-// models_dir when not "auto" and its extra_models_dir.
-func (Adapter) Discover(env source.Env) source.Discovery {
-	var d source.Discovery
-	def := filepath.Join(env.Home, ".cache", "huggingface", "hub")
-	var root, rule string
+// $XDG_CACHE_HOME/huggingface/hub, then ~/.cache/huggingface/hub. It returns
+// the root, the rule that chose it, and the default root.
+func HubRoot(env source.Env) (root, rule, def string) {
+	def = filepath.Join(env.Home, ".cache", "huggingface", "hub")
 	switch {
 	case env.Var("HF_HUB_CACHE") != "":
 		root, rule = env.Expand(env.Var("HF_HUB_CACHE")), "environment HF_HUB_CACHE"
@@ -64,83 +55,50 @@ func (Adapter) Discover(env source.Env) source.Discovery {
 		root, rule = env.Expand(env.Var("HUGGINGFACE_HUB_CACHE")), "environment HUGGINGFACE_HUB_CACHE (legacy)"
 	case env.Var("HF_HOME") != "":
 		root, rule = filepath.Join(env.Expand(env.Var("HF_HOME")), "hub"), "environment HF_HOME"
-	case env.Var("XDG_CACHE_HOME") != "":
-		root, rule = filepath.Join(env.Expand(env.Var("XDG_CACHE_HOME")), "huggingface", "hub"), "environment XDG_CACHE_HOME"
 	default:
-		root, rule = def, "default location ~/.cache/huggingface/hub"
-	}
-	hub := source.NewStore("huggingface", program, root, rule)
-	cfgPath, cfg, err := lemonadeConfig(env)
-	if err != nil {
-		hub.Errors = append(hub.Errors, content.StoreError{Kind: kindOf(err), Locator: cfgPath, Detail: err.Error()})
-	}
-	d.Stores = append(d.Stores, hub)
-	if !fixturePathEqual(root, def) && source.IsDir(def) {
-		d.Stores = append(d.Stores, source.NewStore("huggingface:default", program, def, "default location ~/.cache/huggingface/hub"))
-	}
-	if md := strings.TrimSpace(cfg.ModelsDir); md != "" && !strings.EqualFold(md, "auto") {
-		p := env.Expand(md)
-		if !fixturePathEqual(p, root) && !fixturePathEqual(p, def) {
-			d.Stores = append(d.Stores, source.NewStore("huggingface:lemonade", program, p, "lemonade "+cfgPath+" models_dir"))
+		if cache, set := CacheHome(env); set {
+			root, rule = filepath.Join(cache, "huggingface", "hub"), "environment XDG_CACHE_HOME"
+		} else {
+			root, rule = def, "default location ~/.cache/huggingface/hub"
 		}
 	}
-	if extra := strings.TrimSpace(cfg.ExtraModelsDir); extra != "" {
-		d.Stores = append(d.Stores, source.NewStore("lemonade-extra", lemonade, env.Expand(extra), "lemonade "+cfgPath+" extra_models_dir"))
+	return root, rule, def
+}
+
+// CacheHome is the XDG cache directory huggingface_hub resolves its default
+// under. It returns $XDG_CACHE_HOME and true when it is set, else ~/.cache
+// and false. Lemonade resolves its own cache directory the same way.
+func CacheHome(env source.Env) (string, bool) {
+	if x := env.Var("XDG_CACHE_HOME"); x != "" {
+		return env.Expand(x), true
+	}
+	return filepath.Join(env.Home, ".cache"), false
+}
+
+// Discover reports the cache HubRoot names. A program started with another
+// environment may have used the default, so the default is also reported
+// when it exists and differs.
+func (Adapter) Discover(env source.Env) source.Discovery {
+	var d source.Discovery
+	root, rule, def := HubRoot(env)
+	d.Stores = append(d.Stores, source.NewStore("huggingface", program, root, rule))
+	if !SameFolder(root, def) && source.IsDir(def) {
+		d.Stores = append(d.Stores, source.NewStore("huggingface-default", program, def, "default location ~/.cache/huggingface/hub"))
 	}
 	return d
 }
 
-// fixturePathEqual reports whether a and b name one folder: by file identity
-// when both exist, else by their exact cleaned spelling.
-func fixturePathEqual(a, b string) bool {
+// SameFolder reports whether a and b name one folder: by file identity when
+// both exist, else by their exact cleaned spelling.
+func SameFolder(a, b string) bool {
 	if same, err := identity.SameFile(a, b); err == nil {
 		return same
 	}
 	return filepath.Clean(a) == filepath.Clean(b)
 }
 
-type lemonadeCfg struct {
-	ModelsDir      string `json:"models_dir"`
-	ExtraModelsDir string `json:"extra_models_dir"`
-}
-
-// lemonadeConfig reads ~/.cache/lemonade/config.json, or the older
-// ~/.config/lemonade/config.json when the first does not exist.
-func lemonadeConfig(env source.Env) (string, lemonadeCfg, error) {
-	var cfg lemonadeCfg
-	for _, p := range []string{
-		filepath.Join(env.Home, ".cache", "lemonade", "config.json"),
-		filepath.Join(env.Home, ".config", "lemonade", "config.json"),
-	} {
-		b, err := os.ReadFile(p)
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return p, cfg, unreadable{err}
-		}
-		if err := json.Unmarshal(b, &cfg); err != nil {
-			return p, lemonadeCfg{}, err
-		}
-		return p, cfg, nil
-	}
-	return "", cfg, nil
-}
-
-type unreadable struct{ error }
-
-func kindOf(err error) content.StoreErrorKind {
-	var u unreadable
-	if errors.As(err, &u) {
-		return source.ErrorUnreadableIndex
-	}
-	return source.ErrorMalformedIndex
-}
-
+// Observe reads every models--<org>--<repo> repository in the cache.
 func (Adapter) Observe(loc content.Store, env source.Env) source.StoreObservation {
-	if loc.Name == "lemonade-extra" {
-		return tree.Observe(loc, env, tree.Options{Scheme: lemonade, Holder: lemonade, Purpose: source.PurposeInstalled, Index: "lemonade config.json extra_models_dir"})
-	}
 	o := source.Begin(loc)
 	if !loc.Present {
 		return o.Finish()
@@ -151,22 +109,14 @@ func (Adapter) Observe(loc content.Store, env source.Env) source.StoreObservatio
 		o.Fail(source.ErrorUnreadableTree, ".", err)
 		return o.Finish()
 	}
-	repos := map[string]*repo{}
-	var pending []selection
 	for _, d := range dirs {
-		if !d.IsDir() || !strings.HasPrefix(d.Name(), "models--") {
+		if !d.IsDir() || !strings.HasPrefix(d.Name(), RepoPrefix) {
 			if !d.IsDir() {
 				o.OtherFiles++
 			}
 			continue
 		}
-		r := readRepo(&o, env, loc.Locator, d.Name(), at)
-		repos[strings.ToLower(r.id)] = r
-		pending = append(pending, readRegistry(&o, loc.Locator, r)...)
-	}
-	pending = append(pending, readUserModels(&o, env)...)
-	for _, s := range pending {
-		resolve(&o, repos, s, at)
+		ReadRepo(&o, env, loc.Locator, d.Name(), program, at)
 	}
 	return o.Finish()
 }
@@ -177,27 +127,55 @@ type file struct {
 	size     int64
 	digest   string
 	evidence content.Evidence
+	// recorded is the digest an on-demand hash recorded for a snapshot
+	// file no blob names (LS-13); it goes on the entry, never into the
+	// manifest's identity.
+	recorded string
 }
 
-type artifact struct {
-	key      string
-	files    []string
-	manifest int
+// Artifact is one weights artifact of a revision: a file or a shard set.
+type Artifact struct {
+	// Key is the artifact's name inside the revision.
+	Key string
+	// Files are the weight files, relative to the snapshot.
+	Files []string
+	// Locators are the entry locators of Files, relative to the store.
+	Locators []string
+	// Manifest is the index of the artifact's manifest in the observation.
+	Manifest int
 }
 
-type repo struct {
-	dir  string
-	id   string
-	refs map[string][]string // revision -> ref names
-	revs map[string][]artifact
+// Repo is one repository ReadRepo read.
+type Repo struct {
+	Dir  string
+	ID   string
+	Refs map[string][]string // revision -> ref names
+	Revs map[string][]Artifact
 }
+
+// RepoPrefix marks a Hugging Face repository directory; ModelScopePrefix
+// marks a ModelScope repository written in the same layout (Lemonade).
+const (
+	RepoPrefix       = "models--"
+	ModelScopePrefix = "modelscope--models--"
+)
 
 var hex40 = regexp.MustCompile(`^[0-9a-f]{40}$`)
 var hex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
-var shard = regexp.MustCompile(`-\d{5}-of-\d{5}(\.[A-Za-z0-9]+)$`)
 
-func readRepo(o *source.StoreObservation, env source.Env, root, dir string, at string) *repo {
-	r := &repo{dir: dir, id: strings.ReplaceAll(strings.TrimPrefix(dir, "models--"), "--", "/"), refs: map[string][]string{}, revs: map[string][]artifact{}}
+// Shard matches the -NNNNN-of-NNNNN part of a shard file name.
+var Shard = regexp.MustCompile(`-\d{5}-of-\d{5}(\.[A-Za-z0-9]+)$`)
+
+// ReadRepo reads one repository directory in the hub cache layout into o:
+// its blobs and snapshot files as objects, a manifest per weights artifact
+// of each revision, and a hold by holder per ref naming that revision. A
+// models-- repository is named in scheme hf, a ModelScope one in modelscope.
+func ReadRepo(o *source.StoreObservation, env source.Env, root, dir, holder, at string) *Repo {
+	scheme, id := "hf", strings.TrimPrefix(dir, RepoPrefix)
+	if strings.HasPrefix(dir, ModelScopePrefix) {
+		scheme, id = "modelscope", strings.TrimPrefix(dir, ModelScopePrefix)
+	}
+	r := &Repo{Dir: dir, ID: strings.ReplaceAll(id, "--", "/"), Refs: map[string][]string{}, Revs: map[string][]Artifact{}}
 	base := filepath.Join(root, dir)
 
 	refs, errs := source.Walk(filepath.Join(base, "refs"))
@@ -214,7 +192,7 @@ func readRepo(o *source.StoreObservation, env source.Env, root, dir string, at s
 			o.Fail(source.ErrorMalformedIndex, index, fmt.Errorf("ref content %q is not a 40-hex commit", truncate(rev)))
 			continue
 		}
-		r.refs[rev] = append(r.refs[rev], f.Rel)
+		r.Refs[rev] = append(r.Refs[rev], f.Rel)
 	}
 
 	blobs := map[string]file{}
@@ -268,7 +246,7 @@ func readRepo(o *source.StoreObservation, env source.Env, root, dir string, at s
 					if name := filepath.Base(target); hex64.MatchString(name) {
 						expected = "sha256:" + name
 					}
-					o.Want(source.Holder{Program: program}, content.Basis{Index: prefix + f.Rel, Key: f.Rel}, filepath.ToSlash(target), expected, 0, at)
+					o.Want(source.Holder{Program: holder}, content.Basis{Index: prefix + f.Rel, Key: f.Rel}, filepath.ToSlash(target), expected, 0, at)
 					continue
 				}
 				x = b
@@ -286,8 +264,17 @@ func readRepo(o *source.StoreObservation, env source.Env, root, dir string, at s
 				x = file{rel: f.Rel, locator: prefix + f.Rel, size: f.Size, evidence: content.EvidenceNone}
 				if b, ok := matchBlobBySize(blobs, root, filepath.Join(revDir, filepath.FromSlash(f.Rel)), f.Size); ok {
 					x.digest, x.evidence = b.digest, b.evidence
+				} else {
+					// The hub moved the blob into its snapshot: no blob names
+					// the file. A digest an on-demand hash recorded (LS-13)
+					// is shown on the object and the entry only.
+					x.recorded, _ = source.ContentDigest(env, filepath.Join(revDir, filepath.FromSlash(f.Rel)), f.Rel, f.Size, f.ModTime, ambiguousBinExt)
 				}
-				o.AddObject(x.locator, f, x.digest, x.evidence)
+				digest, evidence := x.digest, x.evidence
+				if x.recorded != "" {
+					digest, evidence = x.recorded, content.EvidenceHashed
+				}
+				o.AddObject(x.locator, f, digest, evidence)
 				if source.IsPartial(f.Rel) {
 					continue
 				}
@@ -312,33 +299,34 @@ func readRepo(o *source.StoreObservation, env source.Env, root, dir string, at s
 		groups := map[string][]file{}
 		var keys []string
 		for _, w := range weights {
-			k := shard.ReplaceAllString(w.rel, "$1")
+			k := Shard.ReplaceAllString(w.rel, "$1")
 			if _, ok := groups[k]; !ok {
 				keys = append(keys, k)
 			}
 			groups[k] = append(groups[k], w)
 		}
 		sort.Strings(keys)
-		held := r.refs[rev]
+		held := r.Refs[rev]
 		name := revisionName(r, rev, len(snaps))
 		addHolds := func(i int) {
 			for _, name := range held {
-				o.Hold(i, program, source.PurposeCache, dir+"/refs/"+name, name, at)
+				o.Hold(i, holder, source.PurposeCache, dir+"/refs/"+name, name, at)
 			}
 		}
 		for _, k := range keys {
 			fs := groups[k]
 			sort.Slice(fs, func(i, j int) bool { return fs[i].rel < fs[j].rel })
 			var entries []content.Entry
-			var rels []string
+			var rels, locs []string
 			for _, f := range fs {
 				entries = append(entries, entryOf(f, source.RoleOf(f.rel)))
 				rels = append(rels, f.rel)
+				locs = append(locs, f.locator)
 			}
 			for _, f := range others {
 				entries = append(entries, entryOf(f, roleOrFile(f.rel)))
 			}
-			descriptor := source.Named(name+":"+k, source.FormatOf(k), program)
+			descriptor := source.Named(name+":"+k, source.FormatOf(k), holder)
 			if len(fs) > 0 {
 				if g, ok := env.Header(filepath.Join(root, filepath.FromSlash(fs[0].locator))); ok {
 					descriptor = descriptor.WithHeader(g)
@@ -350,10 +338,11 @@ func readRepo(o *source.StoreObservation, env source.Env, root, dir string, at s
 			if role := componentRoleOf(fs); role != "" {
 				descriptor = descriptor.WithComponent(fs[0].rel, role)
 			}
-			m := source.NewManifest(o.Name, source.KindModel, entries, []content.Name{{Scheme: "hf", Name: name + ":" + k}}, descriptor.Map())
+			m := source.NewManifest(o.Name, source.KindModel, entries, []content.Name{{Scheme: scheme, Name: name + ":" + k}}, descriptor.Map())
+			m = source.WithRecordedDigests(m, recordedOf(fs, others))
 			i := o.AddManifest(m)
 			addHolds(i)
-			r.revs[rev] = append(r.revs[rev], artifact{key: k, files: rels, manifest: i})
+			r.Revs[rev] = append(r.Revs[rev], Artifact{Key: k, Files: rels, Locators: locs, Manifest: i})
 		}
 		if len(keys) == 0 && len(others) > 0 {
 			var entries []content.Entry
@@ -364,11 +353,26 @@ func readRepo(o *source.StoreObservation, env source.Env, root, dir string, at s
 			if len(short) > 12 {
 				short = short[:12]
 			}
-			m := source.NewManifest(o.Name, source.KindSnapshot, entries, []content.Name{{Scheme: "hf", Name: r.id + "@" + short}}, nil)
+			m := source.NewManifest(o.Name, source.KindSnapshot, entries, []content.Name{{Scheme: scheme, Name: r.ID + "@" + short}}, nil)
+			m = source.WithRecordedDigests(m, recordedOf(nil, others))
 			addHolds(o.AddManifest(m))
 		}
 	}
 	return r
+}
+
+// recordedOf maps each file's locator to the digest an on-demand hash
+// recorded for it (LS-13).
+func recordedOf(groups ...[]file) map[string]string {
+	out := map[string]string{}
+	for _, files := range groups {
+		for _, f := range files {
+			if f.recorded != "" {
+				out[f.locator] = f.recorded
+			}
+		}
+	}
+	return out
 }
 
 // matchBlobBySize finds the blob a snapshot copy at fullPath (of the given
@@ -434,25 +438,25 @@ func filesEqual(a, b string) bool {
 // revision, is <org>/<repo>, as hf cache ls and Lemonade spell it; a revision
 // only other refs name is <org>/<repo>@<ref>; a revision no ref names is
 // <org>/<repo>@<first 12 hex of the commit>.
-func revisionName(r *repo, rev string, revisions int) string {
-	refs := append([]string(nil), r.refs[rev]...)
+func revisionName(r *Repo, rev string, revisions int) string {
+	refs := append([]string(nil), r.Refs[rev]...)
 	sort.Strings(refs)
 	for _, ref := range refs {
 		if ref == "main" {
-			return r.id
+			return r.ID
 		}
 	}
 	if revisions <= 1 {
-		return r.id
+		return r.ID
 	}
 	if len(refs) > 0 {
-		return r.id + "@" + refs[0]
+		return r.ID + "@" + refs[0]
 	}
 	short := rev
 	if len(short) > 12 {
 		short = short[:12]
 	}
-	return r.id + "@" + short
+	return r.ID + "@" + short
 }
 
 func entryOf(f file, role string) content.Entry {
@@ -508,209 +512,4 @@ func truncate(s string) string {
 		return s[:64] + "..."
 	}
 	return s
-}
-
-// selection is one "<role>=<org>/<repo>:<spec>" a Lemonade index names.
-type selection struct {
-	index string
-	key   string
-	role  string
-	repo  string
-	spec  string
-	rev   string
-}
-
-func (s selection) basis() content.Basis {
-	return content.Basis{Index: s.index, Key: s.key, Role: s.role}
-}
-
-type registry struct {
-	ProcessedModels map[string]struct {
-		Selection  string `json:"selection"`
-		SnapshotID string `json:"snapshot_id"`
-	} `json:"processed_models"`
-	SnapshotID string `json:"snapshot_id"`
-}
-
-func readRegistry(o *source.StoreObservation, root string, r *repo) []selection {
-	index := r.dir + "/.lemonade_registry.json"
-	b, err := os.ReadFile(filepath.Join(root, r.dir, ".lemonade_registry.json"))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		o.Fail(source.ErrorUnreadableIndex, index, err)
-		return nil
-	}
-	var reg registry
-	if err := json.Unmarshal(b, &reg); err != nil {
-		o.Fail(source.ErrorMalformedIndex, index, err)
-		return nil
-	}
-	var names []string
-	for n := range reg.ProcessedModels {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	var out []selection
-	for _, n := range names {
-		pm := reg.ProcessedModels[n]
-		rev := pm.SnapshotID
-		if rev == "" {
-			rev = reg.SnapshotID
-		}
-		for _, line := range strings.Split(pm.Selection, "\n") {
-			role, ref, ok := strings.Cut(strings.TrimSpace(line), "=")
-			if !ok {
-				continue // the first line names the recipe
-			}
-			repoID, spec, ok := strings.Cut(ref, ":")
-			if !ok {
-				o.Fail(source.ErrorMalformedIndex, index, fmt.Errorf("%s: selection %q has no <repo>:<file>", n, line))
-				continue
-			}
-			s := selection{index: index, key: n, role: role, repo: repoID, spec: spec}
-			if strings.EqualFold(repoID, r.id) {
-				s.rev = rev
-			}
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-type userModel struct {
-	Checkpoint  string            `json:"checkpoint"`
-	Checkpoints map[string]string `json:"checkpoints"`
-}
-
-// readUserModels reads Lemonade's user_models.json from its configuration and
-// cache directories.
-func readUserModels(o *source.StoreObservation, env source.Env) []selection {
-	var out []selection
-	for _, p := range []string{
-		filepath.Join(env.Home, ".config", "lemonade", "user_models.json"),
-		filepath.Join(env.Home, ".cache", "lemonade", "user_models.json"),
-	} {
-		b, err := os.ReadFile(p)
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			o.Fail(source.ErrorUnreadableIndex, p, err)
-			continue
-		}
-		var models map[string]userModel
-		if err := json.Unmarshal(b, &models); err != nil {
-			o.Fail(source.ErrorMalformedIndex, p, err)
-			continue
-		}
-		var names []string
-		for n := range models {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		for _, n := range names {
-			m := models[n]
-			refs := map[string]string{}
-			for role, ref := range m.Checkpoints {
-				refs[role] = ref
-			}
-			if m.Checkpoint != "" {
-				refs["main"] = m.Checkpoint
-			}
-			var roles []string
-			for role := range refs {
-				roles = append(roles, role)
-			}
-			sort.Strings(roles)
-			for _, role := range roles {
-				repoID, spec, ok := strings.Cut(refs[role], ":")
-				if !ok {
-					o.Fail(source.ErrorMalformedIndex, p, fmt.Errorf("%s: checkpoint %q has no <repo>:<file>", n, refs[role]))
-					continue
-				}
-				out = append(out, selection{index: p, key: n, role: role, repo: repoID, spec: spec})
-			}
-		}
-	}
-	return out
-}
-
-// resolve attaches a Lemonade hold to the artifacts a selection names, or
-// records it as dangling. A selection with no revision applies to the
-// revisions a ref names, or to every revision when none does.
-func resolve(o *source.StoreObservation, repos map[string]*repo, s selection, at string) {
-	r, ok := repos[strings.ToLower(s.repo)]
-	if !ok {
-		o.Want(source.Holder{Program: lemonade}, s.basis(), s.repo+":"+s.spec, "", 0, at)
-		return
-	}
-	var revs []string
-	if s.rev != "" {
-		revs = []string{s.rev}
-	} else {
-		for rev := range r.refs {
-			if _, ok := r.revs[rev]; ok {
-				revs = append(revs, rev)
-			}
-		}
-		if len(revs) == 0 {
-			for rev := range r.revs {
-				revs = append(revs, rev)
-			}
-		}
-	}
-	sort.Strings(revs)
-	matched := false
-	for _, rev := range revs {
-		for _, i := range match(r.revs[rev], s.spec) {
-			o.HoldBy(i, source.Holder{Program: lemonade}, source.PurposeInstalled, s.basis(), at)
-			matched = true
-		}
-	}
-	if !matched {
-		o.Want(source.Holder{Program: lemonade}, s.basis(), s.repo+":"+s.spec, "", 0, at)
-	}
-}
-
-// match finds the artifacts a Lemonade spec names: an exact file path or
-// artifact name, else a quantization variant that is a folder name or the
-// suffix of a file name (Q4_K_M names Tiny-Q4_K_M.gguf). A projector file
-// matches a variant only when the variant says so.
-func match(arts []artifact, spec string) []int {
-	s := strings.ToLower(strings.TrimSpace(spec))
-	if s == "" {
-		return nil
-	}
-	for _, a := range arts {
-		if strings.ToLower(a.key) == s {
-			return []int{a.manifest}
-		}
-		for _, f := range a.files {
-			if strings.ToLower(f) == s {
-				return []int{a.manifest}
-			}
-		}
-	}
-	var out []int
-	for _, a := range arts {
-		for _, f := range a.files {
-			lf := strings.ToLower(f)
-			if first, _, ok := strings.Cut(lf, "/"); ok && first == s {
-				out = append(out, a.manifest)
-				break
-			}
-			base := strings.ToLower(shard.ReplaceAllString(path.Base(f), "$1"))
-			base = strings.TrimSuffix(base, path.Ext(base))
-			if strings.Contains(base, "mmproj") && !strings.Contains(s, "mmproj") {
-				continue
-			}
-			if base == s || strings.HasSuffix(base, "-"+s) || strings.HasSuffix(base, "_"+s) || strings.HasSuffix(base, "."+s) {
-				out = append(out, a.manifest)
-				break
-			}
-		}
-	}
-	return out
 }

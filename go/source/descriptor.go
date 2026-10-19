@@ -2,10 +2,11 @@ package source
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"sync"
-	"time"
 
+	fileidentity "github.com/openabstractions/abstraction-identity"
 	"github.com/openabstractions/abstraction-model/identity"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/gguf"
 )
@@ -36,6 +37,10 @@ type Model struct {
 	// component: MODEL-C3 says a router folds it into its Base family and
 	// never lists it as a family of its own.
 	Role string
+	// ContextLength is the context the weights were trained for, in tokens,
+	// read from a GGUF header's <architecture>.context_length; empty when the
+	// header states none.
+	ContextLength string
 }
 
 // Map is the descriptor a manifest carries. Empty fields are absent, and a
@@ -47,7 +52,7 @@ func (m Model) Map() map[string]string {
 		"family": m.Family, "quant": m.Quant, "format": m.Format,
 		"architecture": m.Architecture, "size_label": m.SizeLabel,
 		"finetune": m.Finetune, "base": m.Base, "source": m.Source,
-		"role": m.Role,
+		"role": m.Role, "context_length": m.ContextLength,
 	} {
 		if v != "" {
 			out[k] = v
@@ -96,6 +101,9 @@ func (m Model) WithHeader(g gguf.General) Model {
 	// The quantisation is spelled as the identity rules spell it, so a
 	// descriptor read from a header and one read from a name are comparable.
 	m.Quant = first(m.Quant, strings.ToLower(g.Quant))
+	if g.ContextLength > 0 {
+		m.ContextLength = strconv.FormatUint(g.ContextLength, 10)
+	}
 	if m.Family == "" {
 		m.Family = identity.Family(headerName(g))
 	}
@@ -143,6 +151,11 @@ func (e Env) Descriptor(path, name, from string) map[string]string {
 	if m.Format == "gguf" {
 		if g, ok := e.Header(path); ok {
 			m = m.WithHeader(g)
+			// A header that calls itself a vision projector is one, whatever
+			// its file is called.
+			if (role == "" || role == RoleWeights) && (g.Type == "mmproj" || g.Architecture == "clip") {
+				role = RoleProjector
+			}
 		}
 	}
 	if role == RoleProjector || role == RoleVAE {
@@ -151,10 +164,9 @@ func (e Env) Descriptor(path, name, from string) map[string]string {
 	return m.Map()
 }
 
-// Headers caches one GGUF header read per path, keyed by the size and
-// modification time the walk already read (model-bridge decision §4 rule 1):
-// a file that has not changed is not opened twice, and a file that has is read
-// again. A nil Headers reads no header at all, which is what a test asserting
+// Headers caches one stable GGUF header read per held-file stamp. A lookup
+// opens and stamps the current file without rereading a cached header's bytes.
+// A nil Headers reads no header at all, which is what a test asserting
 // on names alone wants.
 type Headers struct {
 	mu sync.Mutex
@@ -162,10 +174,9 @@ type Headers struct {
 }
 
 type headerEntry struct {
-	size int64
-	mod  time.Time
-	g    gguf.General
-	ok   bool
+	stamp string
+	g     gguf.General
+	ok    bool
 }
 
 // NewHeaders is an empty header cache, for one run of a source.
@@ -178,7 +189,12 @@ func (e Env) Header(path string) (gguf.General, bool) {
 	if e.Headers == nil {
 		return gguf.General{}, false
 	}
-	st, err := os.Stat(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return gguf.General{}, false
+	}
+	defer f.Close()
+	stamp, st, err := fileidentity.FileStamp(f)
 	if err != nil || !st.Mode().IsRegular() {
 		return gguf.General{}, false
 	}
@@ -187,11 +203,17 @@ func (e Env) Header(path string) (gguf.General, bool) {
 	if e.Headers.at == nil {
 		e.Headers.at = map[string]headerEntry{}
 	}
-	if c, seen := e.Headers.at[path]; seen && c.size == st.Size() && c.mod.Equal(st.ModTime()) {
+	if c, seen := e.Headers.at[path]; seen && c.stamp == stamp {
 		return c.g, c.ok
 	}
-	g, err := gguf.Read(path)
-	entry := headerEntry{size: st.Size(), mod: st.ModTime(), g: g, ok: err == nil}
-	e.Headers.at[path] = entry
-	return entry.g, entry.ok
+	g, err := gguf.ReadFrom(f)
+	after, _, stampErr := fileidentity.FileStamp(f)
+	if stampErr != nil || after != stamp {
+		return gguf.General{}, false
+	}
+	if err != nil {
+		return gguf.General{}, false
+	}
+	e.Headers.at[path] = headerEntry{stamp: stamp, g: g, ok: true}
+	return g, true
 }

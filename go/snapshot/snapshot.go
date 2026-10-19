@@ -24,6 +24,7 @@ import (
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/fastflowlm"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/huggingface"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/jan"
+	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/lemonade"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/lmstudio"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/ollama"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/pinokio"
@@ -78,17 +79,46 @@ type Result struct {
 // Adapters is every adapter, in report order.
 func Adapters() []source.Adapter {
 	return []source.Adapter{
-		ollama.New(), huggingface.New(), lmstudio.New(), comfyui.New(), fastflowlm.New(),
+		ollama.New(), huggingface.New(), lemonade.New(), lmstudio.New(), comfyui.New(), fastflowlm.New(),
 		jan.New(), stabilitymatrix.New(), pinokio.New(), swarmui.New(), extra.New(), asusai.New(),
 	}
 }
 
-// Schemes every adapter names manifests in.
-var schemes = []string{"ollama", "hf", "lmstudio", "comfyui", "flm", "jan", "lemonade", "stabilitymatrix", "pinokio", "swarmui", "asus"}
+// Stores is every store name the adapters give a fixed name. A declaration
+// of this source lists each one; the runtime reads only declared stores.
+// Additional installations, configured model trees and operator roots
+// take names known only on the machine.
+var Stores = []string{
+	ollama.New().Program(), "ollama-service", huggingface.New().Program(), "huggingface-default", lmstudio.New().Program(), comfyui.New().Program(), fastflowlm.New().Program(),
+	jan.New().Program(), "jan-mlx", "jan-external", "lemonade-cache", "lemonade-models", "lemonade-extra",
+	"asus-aicreator", "asus-llmserver", "asus-whisperrecorder",
+	stabilitymatrix.New().Program(), pinokio.New().Program(), swarmui.New().Program(),
+}
+
+// Adapters normally name manifests with their program. These adapters either
+// use other schemes or, for operator roots, only report observed schemes.
+func adapterSchemes() []string {
+	var schemes []string
+	for _, adapter := range Adapters() {
+		switch adapter.(type) {
+		case huggingface.Adapter:
+			schemes = append(schemes, "hf", "modelscope")
+		case fastflowlm.Adapter:
+			schemes = append(schemes, "flm")
+		case extra.Adapter:
+		default:
+			schemes = append(schemes, adapter.Program())
+		}
+	}
+	return schemes
+}
+
+var schemes = adapterSchemes()
 
 // Take observes every store the adapters discover. It writes, moves and
 // deletes nothing in any store, and hashes only what LS-12 allows: a pinned
-// candidate whose record in env.Digests is missing or stale.
+// candidate whose record in env.Digests is missing or stale. A digest an
+// on-request hash recorded (LS-13) is shown, never taken here.
 func Take(env source.Env, adapters []source.Adapter) Result {
 	start := time.Now()
 	at := env.At()
@@ -211,15 +241,12 @@ func Take(env source.Env, adapters []source.Adapter) Result {
 			continue
 		}
 		for m := range o.Manifests {
-			for _, l := range source.EntryLocators(o.Manifests[m].Manifest) {
-				if rel == "" || l == rel || strings.HasPrefix(l, rel+"/") {
-					purpose := c.Purpose
-					if purpose == "" {
-						purpose = source.PurposeInstalled
-					}
-					o.HoldBy(m, c.Holder, purpose, c.Basis, stamp)
-					break
+			if manifestNames(o.Manifests[m].Manifest, rel) {
+				purpose := c.Purpose
+				if purpose == "" {
+					purpose = source.PurposeInstalled
 				}
+				o.HoldBy(m, c.Holder, purpose, c.Basis, stamp)
 			}
 		}
 	}
@@ -362,20 +389,52 @@ func exists(p string) bool {
 	return err == nil
 }
 
-// covering is the present store with the deepest root containing p.
+// covering is the present store with the deepest root containing p. Of two
+// stores that share a cache root, the one whose manifests name p wins
+// independently of adapter order.
 func covering(stores []source.StoreObservation, p string) int {
-	best, depth := -1, -1
+	best, depth, names := -1, -1, false
 	for i, s := range stores {
 		if !s.Present {
 			continue
 		}
-		if _, in, err := source.Within(s.Locator, p); err == nil && in {
-			if d := len(filepath.Clean(s.Locator)); d > depth {
-				best, depth = i, d
-			}
+		rel, in, err := source.Within(s.Locator, p)
+		if err != nil || !in {
+			continue
+		}
+		d := len(filepath.Clean(s.Locator))
+		if d < depth {
+			continue
+		}
+		n := namesPath(s, rel)
+		if d > depth || n && !names {
+			best, depth, names = i, d, n
 		}
 	}
 	return best
+}
+
+// namesPath reports whether a manifest of o names rel or a file under it.
+func namesPath(o source.StoreObservation, rel string) bool {
+	for _, m := range o.Manifests {
+		if manifestNames(m.Manifest, rel) {
+			return true
+		}
+	}
+	return false
+}
+
+// manifestNames reports whether manifest m names rel or a file under it; an
+// empty rel is the store root, which every manifest is under. A claim lands
+// on the store whose manifests name its path and holds exactly those
+// manifests.
+func manifestNames(m content.Manifest, rel string) bool {
+	for _, l := range source.EntryLocators(m) {
+		if rel == "" || l == rel || strings.HasPrefix(l, rel+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func summarize(o source.StoreObservation) Summary {

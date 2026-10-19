@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	fileidentity "github.com/openabstractions/abstraction-identity"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/gguf"
 )
 
@@ -42,6 +43,31 @@ func TestTheHeaderAddsWhatTheNameCannotSay(t *testing.T) {
 	}
 	if got := m.Map(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("descriptor %v, want %v", got, want)
+	}
+}
+
+// The header's trained context is the descriptor's context_length, so a
+// router can offer the window the weights were trained for.
+func TestTheHeaderNamesTheTrainedContext(t *testing.T) {
+	m := Named("unsloth/SmolLM2-135M-Instruct-GGUF:SmolLM2-135M-Instruct-Q4_K_M.gguf", "gguf", "huggingface").
+		WithHeader(gguf.General{Architecture: "llama", ContextLength: 8192})
+	if got := m.Map(); got["context_length"] != "8192" || got["family"] != "smollm2-135m" {
+		t.Fatalf("descriptor %v, want context_length 8192 for smollm2-135m", got)
+	}
+	if got := Named("Tiny-Q6_K.gguf", "gguf", "lmstudio").WithHeader(gguf.General{Architecture: "llama"}).Map(); got["context_length"] != "" {
+		t.Fatalf("a header with no context named one: %v", got)
+	}
+}
+
+// A GGUF whose header is a vision projector (architecture clip) is a
+// component, whatever its file is called.
+func TestAProjectorHeaderMakesAComponent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Qwen3-VL-4B-Instruct-F16.gguf")
+	write(t, path, header("clip", "Qwen3-VL", "4B", "Instruct", 1))
+	got := (Env{Headers: NewHeaders()}).Descriptor(path, "Qwen3-VL-4B-Instruct-F16.gguf", "lmstudio")
+	if got["role"] != RoleProjector {
+		t.Fatalf("a clip header is role %q, want %q: %v", got["role"], RoleProjector, got)
 	}
 }
 
@@ -94,8 +120,7 @@ func TestNoCacheReadsNoHeaderAndAJunkFileStillHasAName(t *testing.T) {
 	}
 }
 
-// The cache reads one header per path while size and modification time hold,
-// and reads again when the file changes (model-bridge decision §4 rule 1).
+// The cache rereads an equal-size in-place rewrite even with restored mtime.
 func TestTheCacheRereadsOnlyWhatChanged(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "Tiny-Q6_K.gguf")
@@ -104,25 +129,86 @@ func TestTheCacheRereadsOnlyWhatChanged(t *testing.T) {
 	if g, ok := env.Header(p); !ok || g.Architecture != "llama" {
 		t.Fatalf("first read %+v %v", g, ok)
 	}
-	// Replacing the bytes without moving size or time is not seen; the cache
-	// is what stops a rescan from opening every file again.
+	// The actual header read and its stamp belong to one held file.
 	st, err := os.Stat(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	same := header("gemma3", "Tiny", "135M", "", 18)
+	same := header("gemma", "Tiny", "135M", "", 18)
 	if len(same) != int(st.Size()) {
 		t.Skipf("the two synthetic headers differ in size (%d, %d)", len(same), st.Size())
 	}
-	write(t, p, same)
-	os.Chtimes(p, st.ModTime(), st.ModTime())
-	if g, _ := env.Header(p); g.Architecture != "llama" {
-		t.Fatalf("an unchanged size and time reopened the file: %+v", g)
+	rewriteStampedFile(t, p, same)
+	if g, _ := env.Header(p); g.Architecture != "gemma" {
+		t.Fatalf("restored metadata hid changed header bytes: %+v", g)
 	}
 	write(t, p, header("gemma3", "Tiny", "270M", "", 18))
 	os.Chtimes(p, st.ModTime().Add(time.Minute), st.ModTime().Add(time.Minute))
 	if g, _ := env.Header(p); g.Architecture != "gemma3" {
 		t.Fatalf("a changed file was answered from the cache: %+v", g)
+	}
+}
+
+// rewriteStampedFile observes actual change-clock advancement. It has no
+// timing sleep and keeps the file's identity, size and modification time.
+func rewriteStampedFile(t *testing.T, path string, body []byte) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	before, info, err := fileidentity.FileStamp(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(body)) != info.Size() {
+		t.Fatal("rewrite fixture size differs")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		write(t, path, body)
+		if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+			t.Fatal(err)
+		}
+		after, current, err := fileidentity.FileStamp(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !os.SameFile(info, current) || current.Size() != info.Size() || !current.ModTime().Equal(info.ModTime()) {
+			t.Fatal("rewrite fixture changed preserved metadata")
+		}
+		if after != before {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Skip("filesystem does not expose an advanced change stamp")
+		}
+	}
+}
+
+func TestHeaderReplacementWithSameSizeAndTimeReadsNewFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "weights.gguf")
+	replacement := filepath.Join(dir, "next.gguf")
+	write(t, path, header("llama", "Tiny", "135M", "", 18))
+	env := Env{Headers: NewHeaders()}
+	if _, ok := env.Header(path); !ok {
+		t.Fatal("initial header missing")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, replacement, header("gemma", "Tiny", "135M", "", 18))
+	if err := os.Chtimes(replacement, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := env.Header(path); !ok || got.Architecture != "gemma" {
+		t.Fatal(got, ok)
 	}
 }
 

@@ -48,8 +48,54 @@ func TestHeaderNamesWhatTheDescriptorCarries(t *testing.T) {
 	if g.Base != "Qwen3 0.6B" {
 		t.Fatalf("base %q", g.Base)
 	}
+	if g.Type != "model" || g.ContextLength != 40960 {
+		t.Fatalf("type %q, context %d; want model and qwen3.context_length 40960", g.Type, g.ContextLength)
+	}
 	if g.Truncated {
 		t.Fatal("a header this size was truncated")
+	}
+}
+
+// The trained context is the architecture's own context_length, read after
+// the general metadata and before the tokenizer, whose arrays stay unread.
+// Another architecture's key is not this model's context.
+func TestTheContextIsTheArchitecturesOwn(t *testing.T) {
+	general := []fixture.GGUFKV{
+		{Key: "general.architecture", Value: fixture.GGUFString("llama")},
+		{Key: "general.name", Value: fixture.GGUFString("Tiny")},
+		{Key: "general.basename", Value: fixture.GGUFString("Tiny")},
+		{Key: "general.finetune", Value: fixture.GGUFString("Instruct")},
+		{Key: "general.size_label", Value: fixture.GGUFString("1B")},
+		{Key: "general.file_type", Value: fixture.GGUFUint32(15)},
+	}
+	tokens := make([]string, 4096)
+	for i := range tokens {
+		tokens[i] = strings.Repeat("t", 64)
+	}
+	vocab := fixture.GGUFKV{Key: "tokenizer.ggml.tokens", Value: fixture.GGUFStrings(tokens...)}
+	withContext := append(append([]fixture.GGUFKV{}, general...),
+		fixture.GGUFKV{Key: "clip.context_length", Value: fixture.GGUFUint32(77)},
+		fixture.GGUFKV{Key: "llama.context_length", Value: fixture.GGUFUint32(8192)}, vocab)
+	g, err := gguf.ReadFrom(bytes.NewReader(fixture.GGUF(1, withContext, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.ContextLength != 8192 {
+		t.Fatalf("context %d, want llama.context_length 8192", g.ContextLength)
+	}
+	// A header that states no context stops at the tokenizer and reads none.
+	without := append(append([]fixture.GGUFKV{}, general...), vocab)
+	file := fixture.GGUF(1, without, 0)
+	counted := &counter{Reader: bytes.NewReader(file)}
+	g, err = gguf.ReadFrom(counted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.ContextLength != 0 || g.Quant != "Q4_K_M" {
+		t.Fatalf("general %+v", g)
+	}
+	if head := len(fixture.GGUF(1, general, 0)); counted.n > int64(head)+64<<10 {
+		t.Fatalf("read %d bytes of a %d-byte header for a %d-byte file", counted.n, head, len(file))
 	}
 }
 

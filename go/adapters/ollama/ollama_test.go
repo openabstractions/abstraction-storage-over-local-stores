@@ -1,6 +1,7 @@
 package ollama_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +13,28 @@ import (
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/source"
 	content "github.com/openabstractions/abstraction-storage/go/abstraction/storage/content"
 )
+
+func TestBareContentDigestGrammar(t *testing.T) {
+	good := strings.Repeat("a", 64)
+	for _, value := range []string{good, "", good[:63], good + "a", strings.ToUpper(good), strings.Repeat("g", 64), "sha256:" + good, " " + good} {
+		root := t.TempDir()
+		path := filepath.Join(root, "manifests", "registry.ollama.ai", "library", "tiny", "latest")
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		body, err := json.Marshal(map[string]any{"layers": []any{map[string]any{"digest": "sha256:" + value, "size": 1}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, body, 0600); err != nil {
+			t.Fatal(err)
+		}
+		o := fixture.Observe(t, ollama.New(), fixture.Env(root, map[string]string{"OLLAMA_MODELS": root}), "ollama")
+		if (len(o.Errors) == 0) != (value == good) {
+			t.Fatalf("manifest content digest %q: %v", value, o.Errors)
+		}
+	}
+}
 
 func TestDiscovery(t *testing.T) {
 	home := fixture.Home(t, "ollama")
