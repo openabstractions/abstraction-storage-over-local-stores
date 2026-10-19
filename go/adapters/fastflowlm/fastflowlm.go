@@ -11,6 +11,8 @@ import (
 
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/source"
 	content "github.com/openabstractions/abstraction-storage/go/abstraction/storage/content"
+
+	identity "github.com/openabstractions/abstraction-identity"
 )
 
 const program = "fastflowlm"
@@ -31,7 +33,9 @@ func (Adapter) Discover(env source.Env) source.Discovery {
 	var d source.Discovery
 	add := func(root, rule string) {
 		for _, l := range d.Stores {
-			if strings.EqualFold(filepath.Clean(l.Locator), filepath.Clean(root)) {
+			// One store found twice: by file identity when it exists, else
+			// by its exact spelling.
+			if same, err := identity.SameFile(l.Locator, root); err == nil && same || err != nil && filepath.Clean(l.Locator) == filepath.Clean(root) {
 				return
 			}
 		}
@@ -82,14 +86,15 @@ func (Adapter) Observe(loc content.Store, env source.Env) source.StoreObservatio
 		group := groups[dir]
 		hasWeights := false
 		for _, f := range group {
-			if !source.IsPartial(f.Rel) && source.IsWeights(f.Rel, q4nx...) {
+			if !source.IsPartial(f.Rel) && source.IsWeights(f.Rel, q4nx...) && !pickle(loc, f) {
 				hasWeights = true
 			}
 		}
 		var entries []content.Entry
 		for _, f := range group {
 			switch {
-			case source.IsPartial(f.Rel):
+			case source.IsPartial(f.Rel), hasWeights && pickle(loc, f):
+				// A pickle is listed and never an entry (LS-1).
 				o.AddObject(f.Rel, f, "", content.EvidenceNone)
 			case hasWeights:
 				o.AddObject(f.Rel, f, "", content.EvidenceNone)
@@ -111,4 +116,10 @@ func (Adapter) Observe(loc content.Store, env source.Env) source.StoreObservatio
 		o.Hold(i, program, source.PurposeInstalled, dir+"/", dir, at)
 	}
 	return o.Finish()
+}
+
+// pickle is a weight file in the store OA never loads (LS-1): it is listed
+// and is never an entry of a model directory's manifest.
+func pickle(loc content.Store, f source.File) bool {
+	return source.IsWeights(f.Rel, q4nx...) && source.IsPickle(filepath.Join(loc.Locator, filepath.FromSlash(f.Rel)), f.Rel)
 }

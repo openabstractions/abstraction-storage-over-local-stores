@@ -16,6 +16,9 @@ import (
 
 	content "github.com/openabstractions/abstraction-storage/go/abstraction/storage/content"
 
+	identity "github.com/openabstractions/abstraction-identity"
+
+	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/asusai"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/comfyui"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/extra"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/fastflowlm"
@@ -76,15 +79,16 @@ type Result struct {
 func Adapters() []source.Adapter {
 	return []source.Adapter{
 		ollama.New(), huggingface.New(), lmstudio.New(), comfyui.New(), fastflowlm.New(),
-		jan.New(), stabilitymatrix.New(), pinokio.New(), swarmui.New(), extra.New(),
+		jan.New(), stabilitymatrix.New(), pinokio.New(), swarmui.New(), extra.New(), asusai.New(),
 	}
 }
 
 // Schemes every adapter names manifests in.
-var schemes = []string{"ollama", "hf", "lmstudio", "comfyui", "flm", "jan", "lemonade", "stabilitymatrix", "pinokio", "swarmui"}
+var schemes = []string{"ollama", "hf", "lmstudio", "comfyui", "flm", "jan", "lemonade", "stabilitymatrix", "pinokio", "swarmui", "asus"}
 
-// Take observes every store the adapters discover. It hashes, writes, moves and
-// deletes nothing.
+// Take observes every store the adapters discover. It writes, moves and
+// deletes nothing in any store, and hashes only what LS-12 allows: a pinned
+// candidate whose record in env.Digests is missing or stale.
 func Take(env source.Env, adapters []source.Adapter) Result {
 	start := time.Now()
 	at := env.At()
@@ -166,12 +170,17 @@ func Take(env source.Env, adapters []source.Adapter) Result {
 		candidates = append(candidates, candidate{root: filepath.Clean(root), claim: c, by: claimedBy[ci]})
 	}
 	for i, c := range candidates {
+		if identity.LocalPath(c.root) != nil {
+			// identity cannot place a refused root: it gets no store.
+			continue
+		}
 		folded := false
 		for j, other := range candidates {
 			if i == j {
 				continue
 			}
-			if rel, in := source.Within(other.root, c.root); in && (rel != "" || j < i) {
+			rel, in, err := source.Within(other.root, c.root)
+			if err == nil && in && (rel != "" || j < i) {
 				folded = true
 				break
 			}
@@ -197,7 +206,10 @@ func Take(env source.Env, adapters []source.Adapter) Result {
 		}
 		o := &observed[i]
 		o.Errors = append(o.Errors, c.Errors...)
-		rel, _ := source.Within(o.Locator, c.Path)
+		rel, _, err := source.Within(o.Locator, c.Path)
+		if err != nil {
+			continue
+		}
 		for m := range o.Manifests {
 			for _, l := range source.EntryLocators(o.Manifests[m].Manifest) {
 				if rel == "" || l == rel || strings.HasPrefix(l, rel+"/") {
@@ -357,7 +369,7 @@ func covering(stores []source.StoreObservation, p string) int {
 		if !s.Present {
 			continue
 		}
-		if _, in := source.Within(s.Locator, p); in {
+		if _, in, err := source.Within(s.Locator, p); err == nil && in {
 			if d := len(filepath.Clean(s.Locator)); d > depth {
 				best, depth = i, d
 			}

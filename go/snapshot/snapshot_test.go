@@ -84,7 +84,13 @@ func TestEveryStoreOnOneMachine(t *testing.T) {
 	}
 	fixture.Equal(t, "v15 holders", fixture.Holders(fixture.MustManifest(t, a1111, "comfyui", "models/Stable-diffusion/v1-5.safetensors")), []string{"comfyui"})
 	fixture.Equal(t, "lora holders", fixture.Holders(fixture.MustManifest(t, a1111, "comfyui", "models/Lora/detail.safetensors")), []string{"comfyui"})
-	fixture.Equal(t, "esrgan holders", fixture.Holders(fixture.MustManifest(t, a1111, "comfyui", "models/ESRGAN/upscale.pth")), []string(nil))
+	// A pickle is listed and never a manifest (CONTRACT.md LS-1).
+	if _, ok := fixture.Manifest(a1111, "comfyui", "models/ESRGAN/upscale.pth"); ok {
+		t.Fatal("the ESRGAN pickle is offered as a model")
+	}
+	if _, ok := fixture.Object(a1111, "models/ESRGAN/upscale.pth"); !ok {
+		t.Fatal("the ESRGAN pickle is not listed")
+	}
 
 	swarm, _ := store(t, r, "swarmui")
 	fixture.Equal(t, "flux holders", fixture.Holders(fixture.MustManifest(t, swarm, "swarmui", "Stable-Diffusion/flux-dev.safetensors")), []string{"swarmui"})
@@ -124,6 +130,9 @@ func TestEveryStoreOnOneMachine(t *testing.T) {
 	partial := fixture.Label("ollama-partial", 64)
 	fixture.Equal(t, "strays", strays, []string{
 		"comfyui checkpoints/SDXL/sd_xl_base_1.0.safetensors.part",
+		// Pickles are listed and never manifests (CONTRACT.md LS-1).
+		"comfyui-extra:a111 models/ESRGAN/upscale.pth",
+		"comfyui-extra:a111 models/Stable-diffusion/unlisted-root.ckpt",
 		"fastflowlm Half-NPU/model.q4nx.part",
 		"huggingface models--acme--Partial-GGUF/blobs/" + fixture.Label("partial-etag", 64) + ".incomplete",
 		"ollama blobs/sha256-" + fixture.Label("ollama-orphan", 64),

@@ -15,6 +15,8 @@ import (
 
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/tree"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/source"
+
+	identity "github.com/openabstractions/abstraction-identity"
 )
 
 const program = "stabilitymatrix"
@@ -54,7 +56,12 @@ func (Adapter) Discover(env source.Env) source.Discovery {
 
 	seen := map[string]bool{}
 	for _, lib := range libs {
-		key := strings.ToLower(filepath.Clean(lib.dir))
+		// One folder named twice: keyed by its final path when it exists
+		// (identity.PlaceKey), else by its cleaned spelling.
+		key, err := identity.PlaceKey(lib.dir)
+		if err != nil {
+			key = filepath.Clean(lib.dir)
+		}
 		if seen[key] {
 			continue
 		}

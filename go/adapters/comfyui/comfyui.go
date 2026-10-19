@@ -17,6 +17,8 @@ import (
 
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/tree"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/source"
+
+	identity "github.com/openabstractions/abstraction-identity"
 )
 
 const program = "comfyui"
@@ -46,7 +48,12 @@ func (Adapter) Discover(env source.Env) source.Discovery {
 	seen := map[string]bool{}
 	n := 0
 	for _, in := range installs {
-		key := strings.ToLower(filepath.Clean(in.dir))
+		// One folder named twice: keyed by its final path when it exists
+		// (identity.PlaceKey), else by its cleaned spelling.
+		key, err := identity.PlaceKey(in.dir)
+		if err != nil {
+			key = filepath.Clean(in.dir)
+		}
 		if seen[key] {
 			continue
 		}

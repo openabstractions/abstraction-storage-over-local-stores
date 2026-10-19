@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	content "github.com/openabstractions/abstraction-storage/go/abstraction/storage/content"
@@ -111,5 +112,84 @@ func TestIsWeightFile(t *testing.T) {
 				t.Fatalf("IsWeightFile(%q) = %v, want %v", c.rel, got, c.want)
 			}
 		})
+	}
+}
+
+// LS-1: OA never loads a pickle. Every weight .pth, .pt and .ckpt is one, and
+// so is every weight .bin whose header is neither GGUF's nor ggml's.
+func TestIsPickle(t *testing.T) {
+	for _, c := range []struct {
+		rel  string
+		body []byte
+		want bool
+	}{
+		{"upscale.pth", []byte("w"), true},
+		{"enc.PT", []byte("w"), true},
+		{"old.ckpt", []byte("w"), true},
+		{"checkpoint.pkl", []byte("w"), true},
+		{"state.pickle", []byte("w"), true},
+		{"pytorch_model.bin", []byte{'P', 'K', 0x03, 0x04}, true},
+		{"legacy.bin", []byte{0x80, 0x02, 0, 0}, true},
+		{"short.bin", []byte{'P'}, true},
+		{"ggml-model.bin", []byte("GGUF\x03\x00\x00\x00"), false},
+		{"ggml-medium.bin", []byte("lmgg\x80\xb1\x00\x00"), false},
+		{"ggml-reversed.bin", []byte("ggml"), true},
+		{"model.safetensors", []byte("w"), false},
+		{"model.gguf", []byte("GGUF"), false},
+	} {
+		full := filepath.Join(t.TempDir(), c.rel)
+		write(t, full, c.body)
+		if got := IsPickle(full, c.rel); got != c.want {
+			t.Fatalf("IsPickle(%q) = %v, want %v", c.rel, got, c.want)
+		}
+	}
+}
+
+// MODELBRIDGE-L21: the model formats OA loads, by extension or by GGUF's
+// magic; a pickle and every other file are in none. An empty path judges a
+// container member by name, so a GGUF .bin member is in none (LS-9).
+func TestModelFormatOf(t *testing.T) {
+	for _, c := range []struct {
+		rel  string
+		body []byte
+		want string
+	}{
+		{"m.gguf", []byte("w"), "gguf"},
+		{"m.safetensors", []byte("w"), "safetensors"},
+		{"m.sft", []byte("w"), "safetensors"},
+		{"m.onnx", []byte("w"), "onnx"},
+		{"model.q4nx", []byte("w"), "q4nx"},
+		{"blobs/sha256-" + strings.Repeat("a", 64), []byte("GGUF\x03\x00\x00\x00"), "gguf"},
+		{"ggml.bin", []byte("GGUF\x03\x00\x00\x00"), "gguf"},
+		{"ggml-medium.bin", []byte("lmgg\x80\xb1\x00\x00"), "ggml"},
+		{"emb_2_3", []byte("lmgg"), "ggml"},
+		{"pytorch_model.bin", []byte{'P', 'K', 0x03, 0x04}, ""},
+		{"upscale.pth", []byte("GGUF"), ""},
+		{"checkpoint.pkl", []byte("w"), ""},
+		{"config.json", []byte("{}"), ""},
+		{"torch.zip", []byte{'P', 'K', 0x03, 0x04}, ""},
+	} {
+		full := filepath.Join(t.TempDir(), filepath.Base(c.rel))
+		write(t, full, c.body)
+		if got := ModelFormatOf(full, c.rel); got != c.want {
+			t.Fatalf("ModelFormatOf(%q) = %q, want %q", c.rel, got, c.want)
+		}
+	}
+	// A directory where a file should be is no regular file and in no format.
+	dir := filepath.Join(t.TempDir(), "sha256-"+strings.Repeat("b", 64))
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := ModelFormatOf(dir, filepath.Base(dir)); got != "" {
+		t.Fatalf("a directory: %q", got)
+	}
+	if !IsPickle(dir, "weights.bin") {
+		t.Fatal("a .bin directory is not refused")
+	}
+	if got := ModelFormatOf("", "member.bin"); got != "" {
+		t.Fatalf("a .bin member by name: %q", got)
+	}
+	if got := ModelFormatOf("", "member.gguf"); got != "gguf" {
+		t.Fatalf("a .gguf member by name: %q", got)
 	}
 }

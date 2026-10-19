@@ -18,6 +18,8 @@ import (
 
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/tree"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/source"
+
+	identity "github.com/openabstractions/abstraction-identity"
 )
 
 const program = "pinokio"
@@ -59,7 +61,12 @@ func (Adapter) Discover(env source.Env) source.Discovery {
 
 	seen := map[string]bool{}
 	for _, h := range homes {
-		key := strings.ToLower(filepath.Clean(h.dir))
+		// One folder named twice: keyed by its final path when it exists
+		// (identity.PlaceKey), else by its cleaned spelling.
+		key, err := identity.PlaceKey(h.dir)
+		if err != nil {
+			key = filepath.Clean(h.dir)
+		}
 		if seen[key] {
 			continue
 		}

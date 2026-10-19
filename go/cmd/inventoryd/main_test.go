@@ -11,6 +11,8 @@ import (
 	content "github.com/openabstractions/abstraction-storage/go/abstraction/storage/content"
 
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/internal/fixture"
+	"github.com/openabstractions/abstraction-storage-over-local-stores/go/snapshot"
+	"github.com/openabstractions/abstraction-storage-over-local-stores/go/source"
 )
 
 func noEnv(string) string { return "" }
@@ -33,6 +35,59 @@ func TestHelpIsTheDefault(t *testing.T) {
 		if code := run([]string{cmd, "--help"}, &out, &errOut, noEnv); code != 0 || !strings.Contains(out.String(), "--config") || !strings.Contains(out.String(), `"comfyui"`) {
 			t.Fatalf("%s help %d %q", cmd, code, out.String())
 		}
+		if cmd == "serve" && !strings.Contains(out.String(), "--ignore-environment-roots") {
+			t.Fatalf("serve help lacks its explicit root-boundary option: %q", out.String())
+		}
+		if cmd == "snapshot" && strings.Contains(out.String(), "--ignore-environment-roots") {
+			t.Fatalf("snapshot help exposes a serve-only option: %q", out.String())
+		}
+	}
+}
+
+func TestServeEnvironmentCanOmitAmbientRootsWithoutChangingOtherCommands(t *testing.T) {
+	home := t.TempDir()
+	getenv := func(k string) string {
+		if k == "HOME" || k == "USERPROFILE" {
+			return home
+		}
+		return ""
+	}
+	serve, err := serveEnvironment("", home, getenv, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !serve.IgnoreEnvironmentRoots {
+		t.Fatal("serve did not preserve the explicit environment-root boundary")
+	}
+	snapshotEnv, err := environment("", home, getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshotEnv.IgnoreEnvironmentRoots {
+		t.Fatal("legacy snapshot behavior silently changed")
+	}
+}
+
+func TestConfigRootsOnlySkipsDefaultAndAmbientSources(t *testing.T) {
+	home := fixture.Home(t, "ollama", "extra")
+	chosen := filepath.Join(home, "chosen")
+	if err := os.MkdirAll(chosen, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := fixture.Env(home, map[string]string{
+		"OLLAMA_MODELS":           filepath.Join(home, "AmbientOllama"),
+		"HF_HOME":                 filepath.Join(home, "AmbientHuggingFace"),
+		"ABSTRACTION_MODEL_ROOTS": "ambient=" + filepath.Join(home, "AmbientExtra"),
+	})
+	env.Config.ExtraRoots = []source.ExtraRoot{{Store: "chosen", Path: chosen}}
+	env.IgnoreEnvironmentRoots = true
+
+	result := snapshot.Take(env, serveAdapters(true))
+	if len(result.Page.Stores) != 1 || result.Page.Stores[0].Name != "chosen" {
+		t.Fatalf("config-roots-only discovered more than the approved folder: %+v", result.Page.Stores)
+	}
+	if len(result.Claims) != 0 {
+		t.Fatalf("config-roots-only followed unrelated program claims: %+v", result.Claims)
 	}
 }
 

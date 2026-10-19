@@ -10,6 +10,8 @@ import (
 	"time"
 
 	content "github.com/openabstractions/abstraction-storage/go/abstraction/storage/content"
+
+	identity "github.com/openabstractions/abstraction-identity"
 )
 
 // File is one directory entry the walk saw, by lstat.
@@ -127,27 +129,29 @@ func pathBase(p string) string {
 	return p
 }
 
-// Within reports whether p is root or lies under it, comparing cleaned paths
-// and ignoring case on Windows-style volumes.
-func Within(root, p string) (string, bool) {
+// Within reports whether p is root or lies under it, and p's path below root
+// with forward slashes. When root exists it asks by file identity
+// (identity.SameFile and identity.WithinRel), which sees junctions and 8.3
+// aliases; when it does not, nothing can lie in it except a path spelled
+// exactly below it (identity.InsideRel). A non-nil error means the question
+// was not answered: a path identity refuses (identity.ErrNotLocalPath) or
+// cannot read. Such a path is neither inside nor outside, and a caller
+// makes no claim and no store for it.
+func Within(root, p string) (string, bool, error) {
 	root = filepath.Clean(root)
 	p = filepath.Clean(p)
-	rel, err := filepath.Rel(root, p)
-	if err != nil {
-		return "", false
+	if err := identity.LocalPath(root); err != nil {
+		return "", false, err
 	}
-	if rel == "." {
-		return "", true
+	if err := identity.LocalPath(p); err != nil {
+		return "", false, err
 	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		if strings.EqualFold(root, p) {
-			return "", true
-		}
-		lr, lp := strings.ToLower(root), strings.ToLower(p)
-		if filepath.VolumeName(root) != "" && strings.HasPrefix(lp, lr+string(filepath.Separator)) {
-			return filepath.ToSlash(p[len(root)+1:]), true
-		}
-		return "", false
+	if root == p {
+		return "", true, nil
 	}
-	return filepath.ToSlash(rel), true
+	if same, err := identity.SameFile(root, p); err == nil && same {
+		return "", true, nil
+	}
+	rel, inside, err := identity.InsideRel(p, root)
+	return filepath.ToSlash(rel), inside, err
 }

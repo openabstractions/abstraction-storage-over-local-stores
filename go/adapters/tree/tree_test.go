@@ -14,7 +14,10 @@ import (
 // does vendored tooling a model host ships beside its store (the ROCm
 // benchmark matrices under Lemonade's cache that inflated a real inventory —
 // research/model-bridge/EXPERIMENT-2026-09-22.md). Name alone cannot tell
-// them apart; a table over the evidence IsWeightFile checks for can.
+// them apart; a table over the evidence IsWeightFile checks for can. A weight
+// ".bin" is listed as an object; it carries a manifest only when its header is
+// GGUF, because every other weight ".bin" is a PyTorch pickle OA never loads
+// (CONTRACT.md LS-1, LS-2).
 func TestBinClassification(t *testing.T) {
 	cases := []struct {
 		name string
@@ -22,7 +25,8 @@ func TestBinClassification(t *testing.T) {
 		// its content.
 		files map[string]string
 		bin   string
-		want  bool
+		// listed: an object; want: a manifest, a loadable weight.
+		listed, want bool
 	}{
 		{
 			name: "bare bin alone is not a weight",
@@ -33,30 +37,40 @@ func TestBinClassification(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "bin beside a transformers config.json is a weight",
+			name: "bin beside a transformers config.json is a listed pickle",
 			files: map[string]string{
-				"acme/model/config.json":      `{"architectures":["AcmeForCausalLM"]}`,
+				"acme/model/config.json":       `{"architectures":["AcmeForCausalLM"]}`,
 				"acme/model/pytorch_model.bin": "weights",
 			},
-			bin:  "acme/model/pytorch_model.bin",
-			want: true,
+			bin:    "acme/model/pytorch_model.bin",
+			listed: true,
 		},
 		{
-			name: "bin beside a safetensors shard index is a weight",
+			name: "bin beside a safetensors shard index is a listed pickle",
 			files: map[string]string{
 				"acme/model/model.safetensors.index.json": `{"weight_map":{}}`,
-				"acme/model/pytorch_model.bin":             "weights",
+				"acme/model/pytorch_model.bin":            "weights",
 			},
-			bin:  "acme/model/pytorch_model.bin",
-			want: true,
+			bin:    "acme/model/pytorch_model.bin",
+			listed: true,
 		},
 		{
-			name: "bin inside a Hugging Face snapshots layout is a weight",
+			name: "bin inside a Hugging Face snapshots layout is a listed pickle",
 			files: map[string]string{
 				"models--acme--Weird/snapshots/" + fixture.Label("weird-rev", 40) + "/pytorch_model.bin": "weights",
 			},
-			bin:  "models--acme--Weird/snapshots/" + fixture.Label("weird-rev", 40) + "/pytorch_model.bin",
-			want: true,
+			bin:    "models--acme--Weird/snapshots/" + fixture.Label("weird-rev", 40) + "/pytorch_model.bin",
+			listed: true,
+		},
+		{
+			name: "bin whose header is GGUF is a loadable weight",
+			files: map[string]string{
+				"acme/model/config.json":    `{}`,
+				"acme/model/ggml-model.bin": "GGUF\x03\x00\x00\x00",
+			},
+			bin:    "acme/model/ggml-model.bin",
+			listed: true,
+			want:   true,
 		},
 	}
 	for _, c := range cases {
@@ -78,8 +92,30 @@ func TestBinClassification(t *testing.T) {
 			if got != c.want {
 				t.Fatalf("%s: manifest for %s present=%v, want %v (manifests=%v)", c.name, c.bin, got, c.want, fixture.Names(o))
 			}
+			if _, listed := fixture.Object(o, c.bin); listed != c.listed {
+				t.Fatalf("%s: object %s listed=%v, want %v (objects=%v)", c.name, c.bin, listed, c.listed, fixture.Locators(o))
+			}
 		})
 	}
+}
+
+// OA never loads a pickle (CONTRACT.md LS-1, VISION 2026-10-01): a .pth,
+// .pt or .ckpt file is listed as an object, with no manifest offering it as a
+// model, beside a safetensors file that keeps its manifest.
+func TestPicklesAreListedNeverLoadable(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{"ESRGAN/upscale.pth", "checkpoints/old.ckpt", "enc/model.pt", "checkpoints/new.safetensors"} {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("weights"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	o := tree.Observe(source.NewStore("test", "test", root, "test"), fixture.Env(root, nil), tree.Options{Scheme: "test"})
+	fixture.Equal(t, "objects", fixture.Locators(o), []string{"ESRGAN/upscale.pth", "checkpoints/new.safetensors", "checkpoints/old.ckpt", "enc/model.pt"})
+	fixture.Equal(t, "manifests", fixture.Names(o), []string{"test:checkpoints/new.safetensors"})
 }
 
 // A projector or VAE is a component of a family, never a family of its own

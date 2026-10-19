@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	identity "github.com/openabstractions/abstraction-identity"
 	content "github.com/openabstractions/abstraction-storage/go/abstraction/storage/content"
 
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/tree"
@@ -40,18 +41,28 @@ func (Adapter) Discover(env source.Env) source.Discovery {
 		if r.Path == "" {
 			continue
 		}
-		d.Stores = append(d.Stores, source.NewStore(name(r.Store), r.Holder, env.Expand(r.Path), "operator configuration extra_roots"))
+		store := source.NewStore(name(r.Store), r.Holder, env.Expand(r.Path), "operator configuration extra_roots")
+		if r.ExpectedFileKey != "" {
+			key, err := identity.FileKey(store.Locator)
+			if err != nil || key != r.ExpectedFileKey {
+				store.Errors = append(store.Errors, content.StoreError{Kind: source.ErrorUnreadableTree,
+					Detail: "the selected directory identity changed; select the folder again"})
+			}
+		}
+		d.Stores = append(d.Stores, store)
 	}
-	for _, entry := range filepath.SplitList(env.Var("ABSTRACTION_MODEL_ROOTS")) {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
+	if !env.IgnoreEnvironmentRoots {
+		for _, entry := range filepath.SplitList(env.Var("ABSTRACTION_MODEL_ROOTS")) {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			store, dir, named := strings.Cut(entry, "=")
+			if !named || dir == "" {
+				store, dir = "", entry
+			}
+			d.Stores = append(d.Stores, source.NewStore(name(store), "", env.Expand(dir), "environment ABSTRACTION_MODEL_ROOTS"))
 		}
-		store, dir, named := strings.Cut(entry, "=")
-		if !named || dir == "" {
-			store, dir = "", entry
-		}
-		d.Stores = append(d.Stores, source.NewStore(name(store), "", env.Expand(dir), "environment ABSTRACTION_MODEL_ROOTS"))
 	}
 	return d
 }
@@ -63,8 +74,24 @@ func itoa(i int) string {
 	return itoa(i/10) + string(rune('0'+i%10))
 }
 
-// Observe reads the root as a tree; Store.Program carries the operator's
-// holder.
+// Observe reads the root as a tree, with each zip in it read as a container
+// (LS-8); Store.Program carries the operator's holder.
 func (Adapter) Observe(loc content.Store, env source.Env) source.StoreObservation {
-	return tree.Observe(loc, env, tree.Options{Scheme: loc.Name, Holder: loc.Program, Purpose: source.PurposeInstalled, Index: "operator configuration"})
+	if len(loc.Errors) != 0 {
+		return source.StoreObservation{Store: loc, Objects: []content.Object{}, Manifests: []content.ManifestHolders{}, Dangling: []content.Dangling{}}
+	}
+	for _, root := range env.Config.ExtraRoots {
+		if root.ExpectedFileKey == "" || env.Expand(root.Path) != loc.Locator {
+			continue
+		}
+		key, err := identity.FileKey(loc.Locator)
+		if err != nil || key != root.ExpectedFileKey {
+			loc.Errors = append(loc.Errors, content.StoreError{Kind: source.ErrorUnreadableTree,
+				Detail: "the selected directory identity changed; select the folder again"})
+			return source.StoreObservation{Store: loc, Objects: []content.Object{}, Manifests: []content.ManifestHolders{}, Dangling: []content.Dangling{}}
+		}
+		break
+	}
+	return tree.Observe(loc, env, tree.Options{Scheme: loc.Name, Holder: loc.Program, Purpose: source.PurposeInstalled,
+		Index: "operator configuration", Containers: true})
 }

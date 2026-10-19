@@ -6,7 +6,6 @@ comfyui	comfyui:text_encoders/umt5_xxl_fp16.safetensors	swarmui		installed	while
 comfyui	comfyui:text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors	comfyui		installed	while_present	observed	models tree	text_encoders	
 comfyui	comfyui:text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors	swarmui		installed	while_present	observed	{{ROOT}}/SwarmUI/Data/Settings.fds	Paths.ModelRoot[1]	
 comfyui-extra:a111	comfyui:models/Lora/detail.safetensors	comfyui		installed	while_present	observed	{{ROOT}}/AppData/Local/AMD/AI_Bundle/ComfyUI/ComfyUI/extra_model_paths.yaml	a111.loras	
-comfyui-extra:a111	comfyui:models/Stable-diffusion/unlisted-root.ckpt	comfyui		installed	while_present	observed	{{ROOT}}/AppData/Local/AMD/AI_Bundle/ComfyUI/ComfyUI/extra_model_paths.yaml	a111.checkpoints	
 comfyui-extra:a111	comfyui:models/Stable-diffusion/v1-5.safetensors	comfyui		installed	while_present	observed	{{ROOT}}/AppData/Local/AMD/AI_Bundle/ComfyUI/ComfyUI/extra_model_paths.yaml	a111.checkpoints	
 fastflowlm	flm:Tiny-NPU2	fastflowlm		installed	while_present	observed	Tiny-NPU2/	Tiny-NPU2	
 huggingface	hf:acme/Partial-GGUF@e0fea238c42e	huggingface		cache	while_present	observed	models--acme--Partial-GGUF/refs/main	main	

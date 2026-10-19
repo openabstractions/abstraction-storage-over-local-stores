@@ -17,6 +17,7 @@ import (
 
 	"github.com/openabstractions/abstraction-identity/listen"
 
+	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/extra"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/service"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/snapshot"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/source"
@@ -31,7 +32,7 @@ keys are refused:
     "stability_matrix": ["D:/StabilityMatrix/Data"],
     "pinokio":          ["C:/pinokio"],
     "fastflowlm":       ["D:/flm/models"],
-    "extra_roots":      [{"store": "tank", "path": "E:/models", "holder": ""}]
+    "extra_roots":      [{"store": "tank", "path": "E:/models", "holder": "", "expected_file_key": ""}]
   }
   comfyui           ComfyUI installation directories (holding main.py and models/)
   swarmui           SwarmUI installation directories (holding Data/Settings.fds)
@@ -39,22 +40,36 @@ keys are refused:
   pinokio           Pinokio home directories beside the one ~/.pinokio names
   fastflowlm        FastFlowLM model directories chosen at installation
   extra_roots       directories on this machine the operator names as stores;
-                    holder, when set, is the program the operator says uses one
+                    holder, when set, is the program the operator says uses one;
+                    expected_file_key, when set, prevents reading a replacement folder
 ABSTRACTION_MODEL_ROOTS ("store=dir" entries separated by the platform list
 separator) adds roots as well. A network share or another machine's store is
 never a store: the source runs where the store is.
+serve --config-roots-only discovers only extra_roots and refuses to scan if an
+extra_roots entry's optional expected_file_key no longer names that directory.
 `
 
 const usage = `inventoryd reads every model store it knows on this machine and reports what
 it holds and which program's own index says it uses each thing. It reads
 directory listings, sizes, modification times, the programs' index files, and
 the key-value header of each GGUF weight file, which names the model the
-weights are. It reads no tensor, hashes nothing, and writes, moves or deletes
-nothing in any store.
+weights are, and the central directory of each zip in an operator-named root.
+Snapshot and serve read no tensor. They hash only a file in ASUS's AI model
+folders whose path and size match a pinned public release and that SYSTEM,
+Administrators or TrustedInstaller owns with no other account able to
+change it. Each is hashed once, in the background, and its digest kept with
+the file's size, time and file ID in a folder private to this account,
+%LOCALAPPDATA%\OpenAbstractions\providers\inventoryd\digests.json; a change
+to any of them hashes it again. serve reports such a file as pending until
+its hash ends; snapshot waits for the hashes it started and reads again.
+Only containers --hash hashes anything else, within the allowance its
+caller names. No command writes, moves or
+deletes anything in any store.
 
 Usage:
-  inventoryd serve --endpoint NAME [--config FILE] [--home DIR]
+  inventoryd serve --endpoint NAME [--config FILE] [--home DIR] [--ignore-environment-roots] [--config-roots-only]
   inventoryd snapshot --json [--config FILE] [--home DIR]
+  inventoryd containers --json [--hash BYTES] [--loose DIR]... ZIP...
   inventoryd help
 
 Commands:
@@ -63,6 +78,10 @@ Commands:
              callers of this account, until interrupted
   snapshot   print what the source would report, once, as JSON on stdout: a
              provider diagnostic, never an application interface
+  containers read zip containers by their central directories, and with
+             --hash hash their weight members within a byte allowance and find
+             loose copies: the one explicit, bounded hashing this provider
+             does (see inventoryd containers --help)
   help       print this help (also -h, --help, or no arguments)
 
 Options:
@@ -71,11 +90,19 @@ Options:
                    per-account directory elsewhere
   --config FILE    operator configuration, JSON; default $INVENTORYD_CONFIG
   --home DIR       read this directory as the user's home instead of the real one
+  --ignore-environment-roots
+                   ignore ABSTRACTION_MODEL_ROOTS in the operator-named-root adapter
+  --config-roots-only
+                   discover only operator-named extra_roots; skip all default
+                   adapters and ABSTRACTION_MODEL_ROOTS for this provider process
   --json           print JSON (snapshot's only output format; required)
 
 Stores: Ollama, Hugging Face hub cache (with Lemonade's registry and
 user_models.json), LM Studio, ComfyUI (with extra_model_paths.yaml),
-FastFlowLM, Jan, Stability Matrix, Pinokio, SwarmUI and operator-named roots.
+FastFlowLM, Jan, Stability Matrix, Pinokio, SwarmUI, operator-named roots
+and ASUS's AI model folders (%ProgramData%\ASUS\AICreator, MuseTree's, and
+LLMServer\models and WhisperRecorder\models), which list only the files
+that are a pinned public release byte for byte.
 
 ` + configHelp
 
@@ -91,11 +118,16 @@ totals and the configuration claims behind cross-program holds.
 
 ` + configHelp
 
-const serveUsage = `Usage: inventoryd serve --endpoint NAME [--config FILE] [--home DIR]
+const serveUsage = `Usage: inventoryd serve --endpoint NAME [--config FILE] [--home DIR] [--ignore-environment-roots] [--config-roots-only]
 
   --endpoint NAME  local endpoint name (required)
   --config FILE    operator configuration, JSON; default $INVENTORYD_CONFIG
   --home DIR       read this directory as the user's home instead of the real one
+  --ignore-environment-roots
+                   ignore ABSTRACTION_MODEL_ROOTS in the operator-named-root adapter
+  --config-roots-only
+                   discover only operator-named extra_roots; skip all default
+                   adapters and ABSTRACTION_MODEL_ROOTS for this provider process
 
 Serves abstraction.storage/inventory-source@1 for callers of this account
 until interrupted. Registration with the platform and designation by the
@@ -122,6 +154,8 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 		return runSnapshot(args[1:], stdout, stderr, getenv)
 	case "serve":
 		return runServe(args[1:], stdout, stderr, getenv)
+	case "containers":
+		return runContainers(args[1:], stdout, stderr)
 	}
 	//unchecked: CLI output; the process exit code, not a returned error, already reports the outcome
 	fmt.Fprintf(stderr, "inventoryd: unknown command %q\n\n%s", args[0], usage)
@@ -150,7 +184,24 @@ func environment(config, home string, getenv func(string) string) (source.Env, e
 	if env.Home == "" {
 		return source.Env{}, fmt.Errorf("no home directory; pass --home")
 	}
+	env.Digests = source.NewDigests(env.DigestRecordPath())
 	return env, nil
+}
+
+func serveEnvironment(config, home string, getenv func(string) string, ignoreEnvironmentRoots bool) (source.Env, error) {
+	env, err := environment(config, home, getenv)
+	if err != nil {
+		return source.Env{}, err
+	}
+	env.IgnoreEnvironmentRoots = ignoreEnvironmentRoots
+	return env, nil
+}
+
+func serveAdapters(configRootsOnly bool) []source.Adapter {
+	if configRootsOnly {
+		return []source.Adapter{extra.New()}
+	}
+	return snapshot.Adapters()
 }
 
 func runSnapshot(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
@@ -180,7 +231,14 @@ func runSnapshot(args []string, stdout, stderr io.Writer, getenv func(string) st
 		fmt.Fprintf(stderr, "inventoryd snapshot: %v\n", err)
 		return 2
 	}
-	b, err := snapshot.Take(env, snapshot.Adapters()).JSON()
+	r := snapshot.Take(env, snapshot.Adapters())
+	// A pinned candidate is hashed in the background (LS-12); this one-shot
+	// diagnostic waits for those hashes and reads again, so its output names
+	// what it hashed. serve never waits.
+	if env.Digests.Wait() {
+		r = snapshot.Take(env, snapshot.Adapters())
+	}
+	b, err := r.JSON()
 	if err != nil {
 		//unchecked: CLI output; the process exit code, not a returned error, already reports the outcome
 		fmt.Fprintf(stderr, "inventoryd snapshot: %v\n", err)
@@ -204,6 +262,8 @@ func runServe(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	endpoint := fs.String("endpoint", "", "")
 	config := fs.String("config", getenv("INVENTORYD_CONFIG"), "")
 	home := fs.String("home", "", "")
+	ignoreEnvironmentRoots := fs.Bool("ignore-environment-roots", false, "")
+	configRootsOnly := fs.Bool("config-roots-only", false, "")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -212,13 +272,14 @@ func runServe(args []string, stdout, stderr io.Writer, getenv func(string) strin
 		fmt.Fprint(stderr, "inventoryd serve: --endpoint is required\n\n"+serveUsage)
 		return 2
 	}
-	env, err := environment(*config, *home, getenv)
+	env, err := serveEnvironment(*config, *home, getenv, *ignoreEnvironmentRoots || *configRootsOnly)
 	if err != nil {
 		//unchecked: CLI output; the process exit code, not a returned error, already reports the outcome
 		fmt.Fprintf(stderr, "inventoryd serve: %v\n", err)
 		return 2
 	}
-	src := service.New(func() snapshot.Result { return snapshot.Take(env, snapshot.Adapters()) })
+	adapters := serveAdapters(*configRootsOnly)
+	src := service.New(func() snapshot.Result { return snapshot.Take(env, adapters) })
 	host, err := service.Listen(listen.Endpoint(*endpoint), src)
 	if err != nil {
 		//unchecked: CLI output; the process exit code, not a returned error, already reports the outcome

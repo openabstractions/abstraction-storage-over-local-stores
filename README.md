@@ -1,18 +1,32 @@
 # abstraction-storage-over-local-stores
 
-For provider implementers. An application reads what this provider reports
-through the runtime's `abstraction.storage/inventory@1`, not this layer
-directly.
+*For provider implementers. An application reads what this provider reports
+through the runtime's `abstraction.storage/inventory@1`.*
 
-A provider that reads the model stores already on one machine — Ollama,
+This provider lists the model files that Ollama, LM Studio, the Hugging Face
+cache and other programs already hold on one machine. The full list is Ollama,
 Hugging Face's hub cache, LM Studio, ComfyUI, FastFlowLM, Jan, Stability
-Matrix, Pinokio, SwarmUI and operator-named directories — and reports what
-each holds and which program's own index says depends on it. It reads
+Matrix, Pinokio, SwarmUI, operator-named directories and ASUS's AI model
+folders (MuseTree's among them). For each it reports what the store holds and
+which program's own index says depends on it. It reads
 directory listings, sizes, modification times, each program's own index files
 and the key-value header of each GGUF weight file, which is where a model
-descriptor's architecture, size label, fine-tune and base come from. It reads
-no tensor and hashes nothing ([CONTRACT.md](CONTRACT.md) LS-6). It writes,
-moves or deletes nothing in any store it reads (LS-7).
+descriptor's architecture, size label, fine-tune and base come from. In an
+operator-named root it reads each zip by its central directory and reports
+each member as an object of its own. Its snapshots read no
+tensor and hash nothing ([CONTRACT.md](CONTRACT.md)) except in ASUS's
+model folders. There a file whose path and size match a pinned public release,
+and that SYSTEM, Administrators or TrustedInstaller owns with no other
+account able to change it, is hashed once per size, modification time and
+file identity, in the background, and listed only when its SHA-256 is the
+release's; the `inventoryd containers --hash` diagnostic hashes
+container members within an allowance its caller names. It writes, moves or
+deletes nothing in any store it reads. [Contract rules](#contract-rules) maps these
+statements to their contract rules.
+
+**What's new here:** One read-only inventory of the model files Ollama, LM
+Studio, the Hugging Face cache, ComfyUI and other applications already hold,
+read in place.
 
 This layer is `abstraction-storage`'s [`abstraction.storage/inventory-source@1`](https://github.com/openabstractions/abstraction-storage/blob/main/content.thrift)
 provider, one of five content-references services that repository's own
@@ -29,7 +43,10 @@ diagnostic command and its own tests.
 - **`go/adapters/`** — one package per store: `ollama`, `huggingface`,
   `lmstudio`, `comfyui`, `fastflowlm`, `jan`, `stabilitymatrix`, `pinokio`,
   `swarmui`, `extra` (operator-named directories from configuration and
-  `ABSTRACTION_MODEL_ROOTS`), and `tree`, the shared reader for stores whose
+  `ABSTRACTION_MODEL_ROOTS`), `asusai` (`%ProgramData%\ASUS\AICreator`,
+  `LLMServer\models` and `WhisperRecorder\models`, read against a pin table of
+  public releases, LS-12; Windows only, where the folders exist and names
+  match ignoring case, so its matching tests skip elsewhere), and `tree`, the shared reader for stores whose
   directory tree is their only index (LM Studio, ComfyUI, Stability Matrix,
   Pinokio's drive, SwarmUI, Lemonade's extra models directory and operator
   roots). Each adapter's package doc names exactly what it reads — for
@@ -51,7 +68,15 @@ diagnostic command and its own tests.
   the `Manifest`/`Hold`/`Dangling` constructors with the seeded roles,
   purposes and kinds (`manifest.go`), and the `abstraction.model/descriptor@1`
   fields an adapter fills from a store's own naming and a file's own header,
-  cached by size and modification time (`descriptor.go`).
+  cached by size and modification time (`descriptor.go`), and `Digests`, the
+  record of LS-12's whole-file digests, hashed in the background and kept
+  in a folder private to this account in OA's own cache
+  (`digests.go`).
+- **`go/container/`** — zip containers read without extraction: `Members`
+  reads central directories (LS-8, LS-9, LS-11), `HashMembers` hashes weight
+  members in place or by streaming decompression within an `Allowance`
+  (LS-10), `Copies` finds loose files holding the same bytes, and `MemberLocator`
+  spells a member's locator.
 - **`go/gguf/`** — the GGUF key-value header reader: architecture,
   quantisation, base name, size label, fine-tune and base model, read without
   opening a tensor.
@@ -60,7 +85,7 @@ diagnostic command and its own tests.
   their observations into one `Result`: the contract records
   (`content.SourceDescription`, `content.SourcePage`) plus per-store
   `Summary` totals, in report order `ollama, huggingface, lmstudio, comfyui,
-  fastflowlm, jan, stabilitymatrix, pinokio, swarmui, extra`
+  fastflowlm, jan, stabilitymatrix, pinokio, swarmui, extra, asusai`
   ([`go/snapshot/snapshot.go`](go/snapshot/snapshot.go)).
 - **`go/internal/`** — `fixture`, a synthetic machine used only by this
   module's own tests.
@@ -169,8 +194,12 @@ reads with it what the provider sees without standing up a listener.
 **Go** 1.26 or later ([`go/go.mod`](go/go.mod)), plus
 [`abstraction-identity`](https://github.com/openabstractions/abstraction-identity),
 [`abstraction-storage/go`](https://github.com/openabstractions/abstraction-storage)
-(the content records this layer composes into) and `gopkg.in/yaml.v3` (read
-by the ComfyUI adapter's `extra_model_paths.yaml`). The recorded evidence
+(the content records this layer composes into),
+`abstraction-identity`'s `go/privatedir` (identity ID-D1, which keeps
+LS-12's digest record private to this account) and `go/trustedpath`
+(ID-D2, LS-12's owner and access check), `golang.org/x/sys` (file identity, delete-sharing reads and the
+owner check on Windows) and `gopkg.in/yaml.v3` (read by the ComfyUI
+adapter's `extra_model_paths.yaml`). The recorded evidence
 (`research/feedback-archive-2026-09-24/content-definitions-and-inventoryd.md` in the parent project) covers
 Windows tests, `go vet` for `GOOS=linux` and `GOOS=darwin`, and a mutation check
 of all ten adapters. `inventoryd serve` as a standalone process, and the
@@ -179,12 +208,19 @@ of all ten adapters. `inventoryd serve` as a standalone process, and the
 ## Today
 
 This layer publishes to
-`github.com/openabstractions/abstraction-storage-over-local-stores`, whose
-first tag is `go/v0.1.0` per `research/release-0.3.0/PLAN.md`. Publication
-waits on the owner creating the repository, after this layer's dependencies
-(router, resource, inference and storage) publish. Everything above runs from
-this local checkout: no tagged release, no `go get` path and no installer
-exist yet. Nothing is registered as a persistent service on any machine.
+`github.com/openabstractions/abstraction-storage-over-local-stores`. Its first
+tag, `go/v0.1.0`, is published, and
+`go get github.com/openabstractions/abstraction-storage-over-local-stores/go@v0.2.0`
+fetches it. The OpenAbstractions installer's "Local model stores" feature, on
+by default, ships `inventoryd` and declares it to the runtime, which starts it
+on demand. Nothing registers it as a persistent service.
+
+## Contract rules
+
+The opening section's statements are these [CONTRACT.md](CONTRACT.md) rules:
+zip members as objects of their own, LS-8 and LS-9; snapshots read no tensor
+and hash nothing, LS-6; the ASUS release hash, LS-12; the
+`containers --hash` allowance, LS-10; nothing written, moved or deleted, LS-7.
 
 ## Licence
 

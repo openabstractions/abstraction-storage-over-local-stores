@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	content "github.com/openabstractions/abstraction-storage/go/abstraction/storage/content"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/gguf"
+	content "github.com/openabstractions/abstraction-storage/go/abstraction/storage/content"
 )
 
 // Kinds seeded by §5.3.
@@ -54,6 +54,11 @@ var weightExts = []string{".gguf", ".safetensors", ".pth", ".onnx", ".pt", ".ckp
 // research/model-bridge/EXPERIMENT-2026-09-22.md).
 const ambiguousWeightExt = ".bin"
 
+// ggmlMagic is the four bytes whisper.cpp's ggml model files start with:
+// the little-endian uint32 0x67676d6c ("ggml"). A ggml file holds tensors
+// and a vocabulary and no code (LS-1).
+const ggmlMagic = "lmgg"
+
 // IsWeights reports the weight-file extensions the §3 prototype counted,
 // by name alone. It does not resolve ".bin", which name alone cannot: see
 // IsWeightFile for the classifier a walk uses to accept or reject a file.
@@ -77,8 +82,8 @@ func IsWeights(name string, extra ...string) bool {
 //   - rel passes through a Hugging Face cache "snapshots/<rev>/" segment,
 //     the layout huggingface_hub always writes a real download into;
 //   - the file's own header is a format this reader recognises: GGUF's
-//     magic, or the zip or pickle signature a PyTorch checkpoint starts
-//     with.
+//     magic, whisper.cpp's ggml magic, or the zip or pickle signature a
+//     PyTorch checkpoint starts with.
 //
 // A bare ".bin" satisfying none of these — a vendored binary sitting alone
 // in an operator-named root — is not listed. Every check reads at most a
@@ -130,18 +135,12 @@ func hasSiblingManifest(fullPath string) bool {
 // local-file-header PyTorch's checkpoint format has used since it moved off
 // raw pickle, or a bare pickle stream (its legacy format).
 func hasKnownBinHeader(fullPath string) bool {
-	f, err := os.Open(fullPath)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	var b [4]byte
-	//unchecked: io.ReadFull only errors when it reads fewer than len(b) bytes, which the n < 4 check below already detects
-	if n, _ := io.ReadFull(f, b[:]); n < 4 {
+	b, ok := firstBytes(fullPath)
+	if !ok {
 		return false
 	}
 	switch {
-	case string(b[:]) == gguf.Magic:
+	case string(b[:]) == gguf.Magic, string(b[:]) == ggmlMagic:
 		return true
 	case b[0] == 'P' && b[1] == 'K' && b[2] == 0x03 && b[3] == 0x04:
 		return true // zip local file header: torch.save's container format
@@ -149,6 +148,83 @@ func hasKnownBinHeader(fullPath string) bool {
 		return true // pickle protocol 2-5: torch.save's legacy format
 	}
 	return false
+}
+
+// pickleExts name PyTorch's and Python's pickle files by extension alone.
+var pickleExts = []string{".pth", ".pt", ".ckpt", ".pkl", ".pickle"}
+
+// modelExts are the model formats OA loads, by extension: GGUF,
+// safetensors, ONNX and FastFlowLM's q4nx.
+var modelExts = []struct{ ext, format string }{
+	{".gguf", "gguf"}, {".safetensors", "safetensors"}, {".sft", "safetensors"},
+	{".onnx", "onnx"}, {".q4nx", "q4nx"},
+}
+
+// ModelFormatOf is the model format of the file at fullPath, named rel, or
+// empty when it is in none OA loads (abstraction-provider-modelbridge
+// CONTRACT.md MODELBRIDGE-L21): gguf, safetensors, onnx or q4nx by
+// extension, gguf for any other name whose first four bytes are GGUF's
+// magic (an Ollama blob, a GGUF .bin), or ggml for one whose first four
+// bytes are whisper.cpp's ggml magic. A pickle is in none. An empty
+// fullPath judges by name alone, as a container member is judged (LS-9).
+func ModelFormatOf(fullPath, rel string) string {
+	if IsPickle(fullPath, rel) {
+		return ""
+	}
+	lower := strings.ToLower(rel)
+	for _, m := range modelExts {
+		if strings.HasSuffix(lower, m.ext) {
+			return m.format
+		}
+	}
+	if b, ok := firstBytes(fullPath); ok {
+		switch string(b[:]) {
+		case gguf.Magic:
+			return "gguf"
+		case ggmlMagic:
+			return "ggml"
+		}
+	}
+	return ""
+}
+
+// IsPickle reports a weight file OA never loads (LS-1, VISION 2026-10-01):
+// a pickle, named .pth, .pt, .ckpt, .pkl or .pickle, or a weight ".bin"
+// whose header is neither GGUF's magic nor whisper.cpp's ggml magic. The file is listed as an object
+// and is never a manifest's weights. A caller reaches IsPickle only for a
+// file IsWeightFile accepted; the check reads at most four bytes.
+func IsPickle(fullPath, rel string) bool {
+	lower := strings.ToLower(rel)
+	for _, e := range pickleExts {
+		if strings.HasSuffix(lower, e) {
+			return true
+		}
+	}
+	if !strings.HasSuffix(lower, ambiguousWeightExt) {
+		return false
+	}
+	b, ok := firstBytes(fullPath)
+	return !ok || (string(b[:]) != gguf.Magic && string(b[:]) != ggmlMagic)
+}
+
+// firstBytes is a regular file's first four bytes. It opens without
+// blocking (O_NONBLOCK on Unix, where a FIFO's open would wait for a writer
+// while the model bridge holds its lock) and checks the opened handle, so a
+// path swapped for a FIFO, a device or a directory after any earlier stat is
+// refused rather than read.
+func firstBytes(fullPath string) ([4]byte, bool) {
+	var b [4]byte
+	f, err := os.OpenFile(fullPath, os.O_RDONLY|openNonblock, 0)
+	if err != nil {
+		return b, false
+	}
+	defer f.Close()
+	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
+		return b, false
+	}
+	//unchecked: io.ReadFull only errors when it reads fewer than len(b) bytes, which the n < 4 check already detects
+	n, _ := io.ReadFull(f, b[:])
+	return b, n == 4
 }
 
 // RoleOf classifies a file by name. It returns "" for a file with no seeded

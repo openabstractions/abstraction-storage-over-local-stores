@@ -23,6 +23,14 @@ type Env struct {
 	// Nil reads no header, and every descriptor is then what a store's own
 	// name says.
 	Headers *Headers
+	// Digests records the whole-file digests LS-12 takes of pinned
+	// candidates (digests.go). Nil hashes nothing, and a store read under
+	// LS-12 then lists nothing.
+	Digests *Digests
+	// IgnoreEnvironmentRoots makes the extra-root adapter omit only
+	// ABSTRACTION_MODEL_ROOTS. By itself it does not change which adapters
+	// inventoryd runs; serve's --config-roots-only selects just extra-root.
+	IgnoreEnvironmentRoots bool
 }
 
 // Config is the operator's configuration for stores with no fixed location.
@@ -49,6 +57,10 @@ type ExtraRoot struct {
 	Store  string `json:"store"`
 	Path   string `json:"path"`
 	Holder string `json:"holder"`
+	// ExpectedFileKey, when present, requires Path to keep naming this exact
+	// directory. The extra adapter reports an error instead of reading a
+	// replacement directory.
+	ExpectedFileKey string `json:"expected_file_key,omitempty"`
 }
 
 // LoadConfig reads an operator configuration file. An empty path is no
@@ -74,7 +86,9 @@ func LoadConfig(path string) (Config, error) {
 func FromOS(c Config) Env {
 	//unchecked: a failure just leaves Home empty, which callers already treat as "no home directory"
 	home, _ := os.UserHomeDir()
-	return Env{GOOS: runtime.GOOS, Home: home, Getenv: os.Getenv, Config: c, Headers: NewHeaders()}
+	e := Env{GOOS: runtime.GOOS, Home: home, Getenv: os.Getenv, Config: c, Headers: NewHeaders()}
+	e.Digests = NewDigests(e.DigestRecordPath())
+	return e
 }
 
 func (e Env) env(k string) string {

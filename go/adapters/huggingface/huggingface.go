@@ -27,6 +27,8 @@ import (
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/adapters/tree"
 	"github.com/openabstractions/abstraction-storage-over-local-stores/go/source"
 	content "github.com/openabstractions/abstraction-storage/go/abstraction/storage/content"
+
+	identity "github.com/openabstractions/abstraction-identity"
 )
 
 const (
@@ -88,8 +90,13 @@ func (Adapter) Discover(env source.Env) source.Discovery {
 	return d
 }
 
+// fixturePathEqual reports whether a and b name one folder: by file identity
+// when both exist, else by their exact cleaned spelling.
 func fixturePathEqual(a, b string) bool {
-	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+	if same, err := identity.SameFile(a, b); err == nil {
+		return same
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 type lemonadeCfg struct {
@@ -291,6 +298,11 @@ func readRepo(o *source.StoreObservation, env source.Env, root, dir string, at s
 			// it as an extra extension here skips the sibling-manifest and
 			// header checks a generic tree walk needs.
 			if source.IsWeights(f.Rel, ambiguousBinExt) {
+				// A pickle (pytorch_model.bin, a .pth) is listed and never
+				// a manifest's weights or entry (LS-1).
+				if source.IsPickle(filepath.Join(revDir, filepath.FromSlash(f.Rel)), f.Rel) {
+					continue
+				}
 				weights = append(weights, x)
 			} else {
 				others = append(others, x)

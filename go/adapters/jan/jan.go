@@ -80,7 +80,8 @@ func (Adapter) Discover(env source.Env) source.Discovery {
 					continue
 				}
 				abs := resolvePath(data, p.value)
-				if _, inside := source.Within(loc.Locator, abs); !inside {
+				// A path identity could not place makes no claim.
+				if _, inside, err := source.Within(loc.Locator, abs); err == nil && !inside {
 					d.Claims = append(d.Claims, source.Claim{Holder: source.Holder{Program: program}, Purpose: source.PurposeInstalled, Path: abs, Store: "jan-external", Basis: content.Basis{Index: index, Key: dir.Name(), Role: p.key}})
 				}
 			}
@@ -182,6 +183,7 @@ func (Adapter) Observe(loc content.Store, env source.Env) source.StoreObservatio
 			continue
 		}
 		var entries []content.Entry
+		pickled := false
 		for _, p := range []struct{ role, key, value string }{
 			{source.RoleWeights, "model_path", m.ModelPath},
 			{source.RoleProjector, "mmproj_path", m.MmprojPath},
@@ -189,8 +191,8 @@ func (Adapter) Observe(loc content.Store, env source.Env) source.StoreObservatio
 			if p.value == "" {
 				continue
 			}
-			rel, inside := source.Within(loc.Locator, resolvePath(data, p.value))
-			if !inside {
+			rel, inside, err := source.Within(loc.Locator, resolvePath(data, p.value))
+			if err != nil || !inside {
 				continue // claimed at discovery
 			}
 			f, ok := objects[rel]
@@ -199,9 +201,14 @@ func (Adapter) Observe(loc content.Store, env source.Env) source.StoreObservatio
 				continue
 			}
 			named[rel] = true
+			if source.IsPickle(filepath.Join(loc.Locator, filepath.FromSlash(rel)), rel) {
+				pickled = true
+				continue
+			}
 			entries = append(entries, source.FileEntry(p.role, rel, f.Size))
 		}
-		if len(entries) == 0 {
+		// A model whose file is a pickle is listed and never offered (LS-1).
+		if len(entries) == 0 || pickled {
 			continue
 		}
 		mf := source.NewManifest(loc.Name, source.KindModel, entries, []content.Name{{Scheme: "jan", Name: id}},
@@ -212,7 +219,7 @@ func (Adapter) Observe(loc content.Store, env source.Env) source.StoreObservatio
 
 	// Weight files no model.yml names: present, and held by nothing Jan records.
 	for _, rel := range weights {
-		if named[rel] {
+		if named[rel] || source.IsPickle(filepath.Join(loc.Locator, filepath.FromSlash(rel)), rel) {
 			continue
 		}
 		f := objects[rel]
